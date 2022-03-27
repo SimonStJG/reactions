@@ -1,51 +1,63 @@
 """Test your reaction speed on a silly game with large buttons and ridiculous noises
 
+Stuff which doesn't work / is a bit silly:
 * SIGWINCH / KEY_RESIZE not delivered when terminal is resized
 * The way I'm using curses can't possibly be right..  why do I have to redraw the footer??
 """
+import argparse
 import asyncio
 import curses
 import curses.ascii
 import dataclasses
 import datetime
 import math
+import os
+import pathlib
 import random
+import shutil
+import tempfile
 import time
 
+import RPI.GPIO
 import simpleaudio
 
 import reactions.sounds
 
 _WIN_COLS = 80
 _WIN_LINES = 20
-_ROUNDS = 5
+_ROUNDS = 1
+_DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=60)
 _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 
 
 @dataclasses.dataclass
 class Button:
     key: str
-    sound: str
+    audio_segment: simpleaudio.WaveObject
 
-    def __post_init__(self):
-        # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
-        # mysterious comments on the internet told me to do this, which did fix it:
-        # for file in $(ls -1 originals | grep wav); do
-        #   sox originals/$file -b 16 -e signed-integer $file
-        # done
-        self.audio_segment = simpleaudio.WaveObject.from_wave_file(
-            str(reactions.sounds.SOUNDS_ROOT / self.sound)
-        )
+
+def new_button(key, sound):
+    # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
+    # mysterious comments on the internet told me to do this, which did fix it:
+    # for file in $(ls -1 originals | grep wav); do
+    #   sox originals/$file -b 16 -e signed-integer $file
+    # done
+    return Button(
+        key,
+        simpleaudio.WaveObject.from_wave_file(
+            str(reactions.sounds.SOUNDS_ROOT / sound)
+        ),
+    )
 
 
 _BUTTONS = [
-    Button("q", "mixkit-boy-says-cow-1742.wav"),
-    Button("w", "mixkit-cartoon-wolf-howling-1774.wav"),
-    Button("e", "mixkit-cowbell-sharp-hit-1743.wav"),
-    Button("a", "mixkit-cow-moo-indoors-1749.wav"),
-    Button("s", "mixkit-goat-baa-stutter-1771.wav"),
-    Button("d", "mixkit-goat-single-baa-1760.wav"),
-    Button("x", "mixkit-stallion-horse-neigh-1762.wav"),
+    new_button("Q", "mixkit-boy-says-cow-1742.wav"),
+    new_button("W", "mixkit-cartoon-wolf-howling-1774.wav"),
+    new_button("E", "mixkit-cowbell-sharp-hit-1743.wav"),
+    new_button("A", "mixkit-cow-moo-indoors-1749.wav"),
+    new_button("S", "mixkit-goat-baa-stutter-1771.wav"),
+    new_button("D", "mixkit-goat-single-baa-1760.wav"),
+    new_button("X", "mixkit-stallion-horse-neigh-1762.wav"),
 ]
 _BUTTONS_BY_KEY = {button.key: button for button in _BUTTONS}
 
@@ -59,11 +71,11 @@ def shuffled_buttons():
 
 @dataclasses.dataclass
 class Scores:
-    current: datetime.timedelta = datetime.timedelta()
-    high: datetime.timedelta = datetime.timedelta(minutes=1)
+    current: datetime.timedelta
+    high: datetime.timedelta
 
 
-class State:
+class State:  # pylint: disable=too-few-public-methods
     NOT_STARTED = "NOT_STARTED"
 
     @dataclasses.dataclass()
@@ -82,7 +94,38 @@ class State:
         last_score: datetime.timedelta
 
 
-async def main_loop(stdscr):
+def save_file_location():
+    return pathlib.Path.home() / ".reactions"
+
+
+def read_high_score():
+    location = save_file_location()
+    try:
+        encoded_values = location.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return _DEFAULT_HIGH_SCORE
+
+    try:
+        secs, microsecs = [int(val) for val in encoded_values.split(":")]
+        return datetime.timedelta(seconds=secs, microseconds=microsecs)
+    except ValueError:
+        # If the file gets corrupted somehow then carry on anyway
+        return _DEFAULT_HIGH_SCORE
+
+
+def save_high_score(score):
+    with tempfile.NamedTemporaryFile(encoding="utf-8", mode="w") as temp_file_handle:
+        temp_file_handle.write(str(score.seconds))
+        temp_file_handle.write(":")
+        temp_file_handle.write(str(score.microseconds))
+
+        # Attempt at an atomic write
+        temp_file_handle.flush()
+        os.fsync(temp_file_handle.fileno())
+        shutil.copy(temp_file_handle.name, save_file_location())
+
+
+async def main_loop(stdscr, is_rpi):
     stdscr.clear()
 
     # Don't block when calling getch or getstr methods.
@@ -97,7 +140,7 @@ async def main_loop(stdscr):
 
     validate_screen_size()
 
-    scores = Scores()
+    scores = Scores(current=datetime.timedelta(), high=read_high_score())
 
     shuffled_buttons_iter = iter(shuffled_buttons())
 
@@ -133,7 +176,6 @@ def play_sounds(keys):
     for key in keys:
         button = _BUTTONS_BY_KEY.get(key, None)
         if button:
-            # _play_with_simpleaudio is non-blocking
             button.audio_segment.play()
 
 
@@ -149,14 +191,19 @@ async def read_keys(stdscr):
     is_exit = False
     while True:
         key = stdscr.getch()
+
+        # No key was pressed
         if key == curses.ERR:
             break
 
         if key == curses.ascii.ESC:
             is_exit = True
 
+        # I only care about the alphanumeric keys.  I'm sure there is a better way to do this but
+        # whatever.
         if key < 255:
-            keys.append(chr(key))
+            # Nothing here cares about upper or lowercase, so just use upper everywhere
+            keys.append(chr(key).upper())
 
     return keys, is_exit
 
@@ -208,7 +255,9 @@ def format_score(score):
     return f"{score.seconds:02d}:{math.floor(score.microseconds / 10_000):02}"
 
 
-async def tick(state, scores, keys, time_elapsed, shuffled_buttons_iter):
+async def tick(
+    state, scores, keys, time_elapsed, shuffled_buttons_iter
+):  # pylint: disable=too-many-return-statements
     match state:
         case State.NOT_STARTED:
             if " " in keys:
@@ -232,12 +281,16 @@ async def tick(state, scores, keys, time_elapsed, shuffled_buttons_iter):
                 first_key = keys[0]
                 if first_key != button.key:
                     scores.current += datetime.timedelta(seconds=5)
-                if round_ == _ROUNDS:
+                if round_ == _ROUNDS - 1:
+                    if scores.current < scores.high:
+                        scores.high = scores.current
+                        save_high_score(scores.high)
                     return State.GameFinished(last_score=scores.current)
                 return cool_down(round_=round_ + 1)
 
         case State.GameFinished():
             if keys:
+                scores.current = datetime.timedelta()
                 return cool_down(round_=0)
 
         case _:
@@ -255,13 +308,25 @@ def cool_down(round_):
 
 
 def validate_screen_size():
-    if curses.COLS < _WIN_COLS or curses.LINES < _WIN_LINES:
-        raise ValueError("You need at least 80 cols and 20 lines")
+    if (
+        curses.COLS < _WIN_COLS  # pylint: disable=no-member
+        or curses.LINES < _WIN_LINES  # pylint: disable=no-member
+    ):
+        raise ValueError("You need at least 80 cols and 20 lines on your terminal")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rpi", action=argparse.BooleanOptionalAction)
+    args = parser.parse_args()
+    return args.rpi
 
 
 def main():
+    is_rpi = parse_args()
+
     try:
-        curses.wrapper(lambda stdscr: asyncio.run(main_loop(stdscr)))
+        curses.wrapper(lambda stdscr: asyncio.run(main_loop(stdscr, is_rpi)))
     except KeyboardInterrupt:
         pass
 

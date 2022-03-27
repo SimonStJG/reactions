@@ -1,9 +1,7 @@
 """Test your reaction speed on a silly game with large buttons and ridiculous noises
 
-TODO
 * SIGWINCH / KEY_RESIZE not delivered when terminal is resized
 * The way I'm using curses can't possibly be right..  why do I have to redraw the footer??
-* Sound
 """
 import asyncio
 import curses
@@ -14,20 +12,49 @@ import math
 import random
 import time
 
+import simpleaudio
+
+from reactions.sounds import SOUNDS_ROOT
+
 _WIN_COLS = 80
 _WIN_LINES = 20
 _ROUNDS = 5
 _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 
-_BUTTONS = {
-    0: "q",
-    1: "w",
-    2: "e",
-    3: "a",
-    4: "s",
-    5: "d",
-    6: "x",
-}
+
+@dataclasses.dataclass
+class Button:
+    key: str
+    sound: str
+
+    def __post_init__(self):
+        # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
+        # mysterious comments on the internet told me to do this, which did fix it:
+        # for file in $(ls -1 originals | grep wav); do
+        #   sox originals/$file -b 16 -e signed-integer $file
+        # done
+        self.audio_segment = simpleaudio.WaveObject.from_wave_file(
+            str(SOUNDS_ROOT / self.sound)
+        )
+
+
+_BUTTONS = [
+    Button("q", "mixkit-boy-says-cow-1742.wav"),
+    Button("w", "mixkit-cartoon-wolf-howling-1774.wav"),
+    Button("e", "mixkit-cowbell-sharp-hit-1743.wav"),
+    Button("a", "mixkit-cow-moo-indoors-1749.wav"),
+    Button("s", "mixkit-goat-baa-stutter-1771.wav"),
+    Button("d", "mixkit-goat-single-baa-1760.wav"),
+    Button("x", "mixkit-stallion-horse-neigh-1762.wav"),
+]
+_BUTTONS_BY_KEY = {button.key: button for button in _BUTTONS}
+
+
+def shuffled_buttons():
+    while True:
+        pool = _BUTTONS + _BUTTONS
+        random.shuffle(pool)
+        yield from pool
 
 
 @dataclasses.dataclass
@@ -61,8 +88,8 @@ async def main_loop(stdscr):
     # Don't block when calling getch or getstr methods.
     stdscr.nodelay(True)
 
-    # Set the time to wait for an escape sequence after the ESC key is pressed to a tiny value.  We don't need any
-    # escape sequences want to use ESC to signal that the game is over.
+    # Set the time to wait for an escape sequence after the ESC key is pressed to a tiny value.
+    # We don't need any escape sequences want to use ESC to signal that the game is over.
     curses.set_escdelay(10)
 
     # Remove flashing cursor
@@ -72,8 +99,11 @@ async def main_loop(stdscr):
 
     scores = Scores()
 
-    # Create some windows to hold the different bits of text on the screen.  win_scores is the top line and has current
-    # and high score, win_footer is the bottom line and has some constant text, and win_main has everything else.
+    shuffled_buttons_iter = iter(shuffled_buttons())
+
+    # Create some windows to hold the different bits of text on the screen.  win_scores is the top
+    # line and has current and high score, win_footer is the bottom line and has some constant
+    # text, and win_main has everything else.
     win_scores = curses.newwin(1, _WIN_COLS, 0, 0)
     win_footer = curses.newwin(1, _WIN_COLS, _WIN_LINES - 1, 0)
     win_main = curses.newwin(_WIN_LINES - 2, _WIN_COLS, 1, 0)
@@ -82,13 +112,15 @@ async def main_loop(stdscr):
     state = State.NOT_STARTED
 
     while True:
-        last_tick, time_elapsed = await _calculate_time_elapsed(last_tick)
+        last_tick, time_elapsed = await calculate_time_elapsed(last_tick)
 
         keys, is_exit = await read_keys(stdscr)
         if is_exit:
             break
 
-        state = await tick(state, scores, keys, time_elapsed)
+        play_sounds(keys)
+
+        state = await tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
 
         refresh_win_scores(win_scores, scores)
         refresh_win_main(win_main, state)
@@ -97,7 +129,15 @@ async def main_loop(stdscr):
         await asyncio.sleep(0.01)
 
 
-async def _calculate_time_elapsed(last_tick):
+def play_sounds(keys):
+    for key in keys:
+        button = _BUTTONS_BY_KEY.get(key, None)
+        if button:
+            # _play_with_simpleaudio is non-blocking
+            button.audio_segment.play()
+
+
+async def calculate_time_elapsed(last_tick):
     this_tick = time.time_ns()
     time_elapsed = datetime.timedelta(microseconds=(this_tick - last_tick) / 1000)
     last_tick = this_tick
@@ -142,9 +182,7 @@ def refresh_win_main(win_main, state):
     y_position = math.ceil((_WIN_LINES - 2) / 2)
 
     def centre_message(message):
-        win_main.addstr(
-            y_position, math.ceil((_WIN_COLS - len(message)) / 2), message
-        )
+        win_main.addstr(y_position, math.ceil((_WIN_COLS - len(message)) / 2), message)
 
     win_main.move(y_position, 0)
     win_main.clrtoeol()
@@ -155,9 +193,11 @@ def refresh_win_main(win_main, state):
         case State.CoolDown():
             centre_message("Get Ready")
         case State.WaitingOnButton(button=button):
-            centre_message(f"Press button: {button}")
+            centre_message(f"Press button: {button.key}")
         case State.GameFinished(last_score=last_score):
-            centre_message(f"Your score: {format_score(last_score)}.  Press any key to play again.")
+            centre_message(
+                f"Your score: {format_score(last_score)}.  Press any key to play again."
+            )
         case _:
             raise NotImplementedError(state)
 
@@ -168,7 +208,7 @@ def format_score(score):
     return f"{score.seconds:02d}:{math.floor(score.microseconds / 10_000):02}"
 
 
-async def tick(state, scores, keys, time_elapsed):
+async def tick(state, scores, keys, time_elapsed, shuffled_buttons_iter):
     match state:
         case State.NOT_STARTED:
             if " " in keys:
@@ -177,8 +217,7 @@ async def tick(state, scores, keys, time_elapsed):
         case State.CoolDown(round_=round_, delay=delay, elapsed=elapsed):
             new_elapsed = elapsed + time_elapsed
             if new_elapsed >= delay:
-                next_button = _BUTTONS[random.randrange(0, len(_BUTTONS))]
-                return State.WaitingOnButton(round_, button=next_button)
+                return State.WaitingOnButton(round_, button=next(shuffled_buttons_iter))
 
             state.elapsed = new_elapsed
             return state
@@ -191,7 +230,7 @@ async def tick(state, scores, keys, time_elapsed):
 
             if keys:
                 first_key = keys[0]
-                if first_key != button:
+                if first_key != button.key:
                     scores.current += datetime.timedelta(seconds=5)
                 if round_ == _ROUNDS:
                     return State.GameFinished(last_score=scores.current)
@@ -210,9 +249,7 @@ async def tick(state, scores, keys, time_elapsed):
 def cool_down(round_):
     return State.CoolDown(
         round_=round_,
-        delay=datetime.timedelta(
-            seconds=random.randint(2000, 4000) / 1_000
-        ),
+        delay=datetime.timedelta(seconds=random.randint(2000, 4000) / 1_000),
         elapsed=datetime.timedelta(),
     )
 
@@ -223,7 +260,10 @@ def validate_screen_size():
 
 
 def main():
-    curses.wrapper(lambda stdscr: asyncio.run(main_loop(stdscr)))
+    try:
+        curses.wrapper(lambda stdscr: asyncio.run(main_loop(stdscr)))
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

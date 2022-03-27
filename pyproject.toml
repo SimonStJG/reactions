@@ -6,6 +6,7 @@ authors = ["Simon StJG <Simon.StJG@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.10"
+simpleaudio = "^1.0.4"
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"

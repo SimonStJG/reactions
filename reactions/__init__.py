@@ -17,15 +17,16 @@ import random
 import shutil
 import tempfile
 import time
+from typing import Dict, List
 
-import RPI.GPIO
+import gpiozero
 import simpleaudio
 
 import reactions.sounds
 
 _WIN_COLS = 80
 _WIN_LINES = 20
-_ROUNDS = 1
+_ROUNDS = 5
 _DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=60)
 _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 
@@ -34,37 +35,81 @@ _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 class Button:
     key: str
     audio_segment: simpleaudio.WaveObject
+    led: gpiozero.LED
+    rpi_button: gpiozero.Button
 
 
-def new_button(key, sound):
+class StubLED:
+    pass
+
+
+class StubButton:
+    pass
+
+
+# A place to keep all of the RPi buttons which have been pressed since the last tick.
+_rpi_key_presses = []
+
+
+def new_button(is_rpi, key, sound, pin_led, pin_button):
     # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
     # mysterious comments on the internet told me to do this, which did fix it:
     # for file in $(ls -1 originals | grep wav); do
     #   sox originals/$file -b 16 -e signed-integer $file
     # done
-    return Button(
-        key,
-        simpleaudio.WaveObject.from_wave_file(
-            str(reactions.sounds.SOUNDS_ROOT / sound)
-        ),
+    wave_object = simpleaudio.WaveObject.from_wave_file(
+        str(reactions.sounds.SOUNDS_ROOT / sound)
     )
 
+    if is_rpi:
+        led = gpiozero.LED(pin_led)
+    else:
+        led = StubLED()
 
-_BUTTONS = [
-    new_button("Q", "mixkit-boy-says-cow-1742.wav"),
-    new_button("W", "mixkit-cartoon-wolf-howling-1774.wav"),
-    new_button("E", "mixkit-cowbell-sharp-hit-1743.wav"),
-    new_button("A", "mixkit-cow-moo-indoors-1749.wav"),
-    new_button("S", "mixkit-goat-baa-stutter-1771.wav"),
-    new_button("D", "mixkit-goat-single-baa-1760.wav"),
-    new_button("X", "mixkit-stallion-horse-neigh-1762.wav"),
-]
-_BUTTONS_BY_KEY = {button.key: button for button in _BUTTONS}
+    if is_rpi:
+        rpi_button = gpiozero.Button(pin_button)
+    else:
+        rpi_button = StubButton()
+
+    button = Button(
+        key,
+        wave_object,
+        led,
+        rpi_button,
+    )
+    if is_rpi:
+        # Ensure that it's the asyncio event loop which adds to _rpi_key_presses not the gpiozero
+        # thread, otherwise we could get some concurrent modification problems.
+        button.rpi_button.when_activated = asyncio.create_task(
+            lambda: _rpi_key_presses.append(button)
+        )
+
+    return button
 
 
-def shuffled_buttons():
+@dataclasses.dataclass
+class Buttons:
+    buttons: List[Button]
+    buttons_by_key: Dict[str, Button]
+
+
+def create_buttons(is_rpi):
+    buttons = [
+        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 5, 11),
+        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 6, 12),
+        new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 7, 13),
+        new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 8, 14),
+        new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 9, 15),
+        new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 10, 16),
+        new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
+    ]
+    buttons_by_key = {button.key: button for button in buttons}
+    return Buttons(buttons, buttons_by_key)
+
+
+def shuffled_buttons(buttons: Buttons):
     while True:
-        pool = _BUTTONS + _BUTTONS
+        pool = buttons.buttons + buttons.buttons
         random.shuffle(pool)
         yield from pool
 
@@ -126,23 +171,36 @@ def save_high_score(score):
 
 
 async def main_loop(stdscr, is_rpi):
-    stdscr.clear()
+    buttons = create_buttons(is_rpi)
+    shuffled_buttons_iter = iter(shuffled_buttons(buttons))
+    scores = Scores(current=datetime.timedelta(), high=read_high_score())
+    win_scores, win_footer, win_main = init_curses(stdscr)
+    last_tick = time.time_ns()
+    state = State.NOT_STARTED
+    while True:
+        last_tick, time_elapsed = await calculate_time_elapsed(last_tick)
 
+        keys, is_exit = await read_keys(stdscr)
+        if is_exit:
+            break
+
+        play_sounds(buttons, keys)
+        state = await tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+        refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
+
+        await asyncio.sleep(0.01)
+
+
+def init_curses(stdscr):
+    stdscr.clear()
     # Don't block when calling getch or getstr methods.
     stdscr.nodelay(True)
-
     # Set the time to wait for an escape sequence after the ESC key is pressed to a tiny value.
     # We don't need any escape sequences want to use ESC to signal that the game is over.
     curses.set_escdelay(10)
-
     # Remove flashing cursor
     curses.curs_set(0)
-
     validate_screen_size()
-
-    scores = Scores(current=datetime.timedelta(), high=read_high_score())
-
-    shuffled_buttons_iter = iter(shuffled_buttons())
 
     # Create some windows to hold the different bits of text on the screen.  win_scores is the top
     # line and has current and high score, win_footer is the bottom line and has some constant
@@ -151,30 +209,18 @@ async def main_loop(stdscr, is_rpi):
     win_footer = curses.newwin(1, _WIN_COLS, _WIN_LINES - 1, 0)
     win_main = curses.newwin(_WIN_LINES - 2, _WIN_COLS, 1, 0)
 
-    last_tick = time.time_ns()
-    state = State.NOT_STARTED
-
-    while True:
-        last_tick, time_elapsed = await calculate_time_elapsed(last_tick)
-
-        keys, is_exit = await read_keys(stdscr)
-        if is_exit:
-            break
-
-        play_sounds(keys)
-
-        state = await tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
-
-        refresh_win_scores(win_scores, scores)
-        refresh_win_main(win_main, state)
-        refresh_win_footer(win_footer)
-
-        await asyncio.sleep(0.01)
+    return win_scores, win_footer, win_main
 
 
-def play_sounds(keys):
+def refresh_curses_windows(scores, state, win_footer, win_main, win_scores):
+    refresh_win_scores(win_scores, scores)
+    refresh_win_main(win_main, state)
+    refresh_win_footer(win_footer)
+
+
+def play_sounds(buttons, keys):
     for key in keys:
-        button = _BUTTONS_BY_KEY.get(key, None)
+        button = buttons.buttons_by_key.get(key, None)
         if button:
             button.audio_segment.play()
 
@@ -330,6 +376,3 @@ def main():
     except KeyboardInterrupt:
         pass
 
-
-if __name__ == "__main__":
-    main()

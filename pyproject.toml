@@ -4,8 +4,14 @@ version = "0.1.0"
 description = ""
 authors = ["Simon StJG <Simon.StJG@gmail.com>"]
 
+[tool.poetry.scripts]
+reactions = "reactions.game:main"
+
 [tool.poetry.dependencies]
 python = "^3.10"
+simpleaudio = "^1.0.4"
+gpiozero = "^1.6.2"
+raspberrypi-tm1637 = {git = "https://github.com/SimonStJG/raspberrypi-tm1637.git"}
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"

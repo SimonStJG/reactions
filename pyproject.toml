@@ -4,6 +4,9 @@ version = "0.1.0"
 description = ""
 authors = ["Simon StJG <Simon.StJG@gmail.com>"]
 
+[tool.poetry.scripts]
+reactions = "reactions:main"
+
 [tool.poetry.dependencies]
 python = "^3.10"
 simpleaudio = "^1.0.4"

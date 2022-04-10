@@ -29,6 +29,7 @@ _WIN_LINES = 20
 _ROUNDS = 5
 _DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=60)
 _TIMEOUT_SECS = datetime.timedelta(seconds=60)
+_BUTTON_DEBOUNCE_PERIOD_SECS = 0.050  # 50 ms
 
 
 @dataclasses.dataclass
@@ -47,7 +48,7 @@ class StubButton:
     pass
 
 
-# A place to keep all of the RPi buttons which have been pressed since the last tick.
+# A place to keep all the RPi buttons which have been pressed since the last tick.
 rpi_key_presses = []
 
 
@@ -71,24 +72,12 @@ def new_button(is_rpi, key, sound, pin_led, pin_button):
     else:
         rpi_button = StubButton()
 
-    button = Button(
+    return Button(
         key,
         wave_object,
         led,
         rpi_button,
     )
-    if is_rpi:
-        async def append_button_press():
-            return rpi_key_presses.append(button)
-
-        def when_activated():
-            asyncio.run_coroutine_threadsafe(append_button_press(), asyncio.get_event_loop())
-
-        # Ensure that it's the asyncio event loop which adds to _rpi_key_presses not the gpiozero
-        # thread, otherwise we could get some concurrent modification problems.
-        button.rpi_button.when_activated = when_activated
-
-    return button
 
 
 @dataclasses.dataclass
@@ -108,7 +97,43 @@ def create_buttons(is_rpi):
         new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
     ]
     buttons_by_key = {button.key: button for button in buttons}
-    return Buttons(buttons, buttons_by_key)
+    ret = Buttons(buttons, buttons_by_key)
+    if is_rpi:
+        asyncio.create_task(rpi_button_poll_loop(buttons))
+    return ret
+
+
+async def rpi_button_poll_loop(buttons):
+    """A polling loop which waits for a button to read 0 or 1 stably for a small amount of time, before registering a
+    button press."""
+
+    @dataclasses.dataclass
+    class PollState:
+        value: bool
+        timer: float
+
+    states = {button: PollState(False, time.time()) for button in buttons}
+
+    last_call = time.time()
+    for button in buttons:
+        now = time.time()
+        time_elapsed = now - last_call
+
+        current_state = states[button]
+        raw_value = button.rpi_button.value
+
+        if raw_value == current_state.value:
+            # No change, reset the timer
+            current_state.timer = _BUTTON_DEBOUNCE_PERIOD_SECS
+        else:
+            current_state.timer -= time_elapsed
+            if current_state.timer <= _BUTTON_DEBOUNCE_PERIOD_SECS:
+                # State change has been stable for long enough, emit a keypress
+                current_state.value = raw_value
+                current_state.timer = now
+                rpi_key_presses.append(button)
+        last_call = now
+        await asyncio.sleep(0.01)
 
 
 def shuffled_buttons(buttons: Buttons):
@@ -189,6 +214,7 @@ async def main_loop(stdscr, is_rpi):
             break
 
         play_sounds(buttons, keys)
+        update_button_lights(state, buttons, is_rpi)
         state = await tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
         refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
 
@@ -227,6 +253,19 @@ def play_sounds(buttons, keys):
         button = buttons.buttons_by_key.get(key, None)
         if button:
             button.audio_segment.play()
+
+
+def update_button_lights(state, buttons, is_rpi):
+    if not is_rpi:
+        return
+
+    match state:
+        case State.WaitingOnButton(button=waited_on_button):
+            for button in buttons.buttons:
+                if button == waited_on_button:
+                    button.led.on()
+                else:
+                    button.led.off()
 
 
 async def calculate_time_elapsed(last_tick):
@@ -385,4 +424,3 @@ def main():
         curses.wrapper(lambda stdscr: asyncio.run(main_loop(stdscr, is_rpi)))
     except KeyboardInterrupt:
         pass
-

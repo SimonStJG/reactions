@@ -48,7 +48,7 @@ class StubButton:
 
 
 # A place to keep all of the RPi buttons which have been pressed since the last tick.
-_rpi_key_presses = []
+rpi_key_presses = []
 
 
 def new_button(is_rpi, key, sound, pin_led, pin_button):
@@ -78,11 +78,15 @@ def new_button(is_rpi, key, sound, pin_led, pin_button):
         rpi_button,
     )
     if is_rpi:
+        async def append_button_press():
+            return rpi_key_presses.append(button)
+
+        def when_activated():
+            asyncio.run_coroutine_threadsafe(append_button_press(), asyncio.get_event_loop())
+
         # Ensure that it's the asyncio event loop which adds to _rpi_key_presses not the gpiozero
         # thread, otherwise we could get some concurrent modification problems.
-        button.rpi_button.when_activated = asyncio.create_task(
-            lambda: _rpi_key_presses.append(button)
-        )
+        button.rpi_button.when_activated = when_activated
 
     return button
 
@@ -235,6 +239,8 @@ async def calculate_time_elapsed(last_tick):
 async def read_keys(stdscr):
     keys = []
     is_exit = False
+
+    # Read keys from keyboard
     while True:
         key = stdscr.getch()
 
@@ -250,6 +256,10 @@ async def read_keys(stdscr):
         if key < 255:
             # Nothing here cares about upper or lowercase, so just use upper everywhere
             keys.append(chr(key).upper())
+
+    # Read keys from RPi buttons
+    for button in rpi_key_presses:
+        keys.append(button.key)
 
     return keys, is_exit
 

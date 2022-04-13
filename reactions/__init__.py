@@ -5,7 +5,6 @@ Stuff which doesn't work / is a bit silly:
 * The way I'm using curses can't possibly be right..  why do I have to redraw the footer??
 """
 import argparse
-import asyncio
 import curses
 import curses.ascii
 import dataclasses
@@ -16,6 +15,7 @@ import pathlib
 import random
 import shutil
 import tempfile
+import threading
 import time
 from typing import Dict, List
 
@@ -24,15 +24,17 @@ import simpleaudio
 
 import reactions.sounds
 
-_WIN_COLS = 80
-_WIN_LINES = 20
-_ROUNDS = 5
-_DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=60)
-_TIMEOUT_SECS = datetime.timedelta(seconds=60)
-_BUTTON_DEBOUNCE_PERIOD_SECS = 0.050  # 50 ms
+WIN_COLS = 80
+WIN_LINES = 20
+ROUNDS = 5
+DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=60)
+TIMEOUT_SECS = datetime.timedelta(seconds=60)
+BUTTON_DEBOUNCE_PERIOD_SECS = 0.050  # 50 ms
+BUTTON_POLL_TICK_PERIOD = 0.5
+MAIN_LOOP_TICK_PERIOD = 0.01
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(unsafe_hash=True)  # todo yolo
 class Button:
     key: str
     audio_segment: simpleaudio.WaveObject
@@ -50,6 +52,7 @@ class StubButton:
 
 # A place to keep all the RPi buttons which have been pressed since the last tick.
 rpi_key_presses = []
+rpi_key_presses_lock = threading.RLock()  # todo make non blocking
 
 
 def new_button(is_rpi, key, sound, pin_led, pin_button):
@@ -68,15 +71,15 @@ def new_button(is_rpi, key, sound, pin_led, pin_button):
         led = StubLED()
 
     if is_rpi:
-        rpi_button = gpiozero.Button(pin_button)
+        rpi_button = gpiozero.Button(pin_button, pull_up=True)
     else:
         rpi_button = StubButton()
 
     return Button(
-        key,
-        wave_object,
-        led,
-        rpi_button,
+        key=key,
+        audio_segment=wave_object,
+        led=led,
+        rpi_button=rpi_button,
     )
 
 
@@ -88,52 +91,16 @@ class Buttons:
 
 def create_buttons(is_rpi):
     buttons = [
-        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 5, 11),
-        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 6, 12),
-        new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 7, 13),
-        new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 8, 14),
-        new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 9, 15),
-        new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 10, 16),
-        new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
+        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 17, 4),
+        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 27, 5),
+        # new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 7, 13),
+        # new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 8, 14),
+        # new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 9, 15),
+        # new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 10, 16),
+        # new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
     ]
     buttons_by_key = {button.key: button for button in buttons}
-    ret = Buttons(buttons, buttons_by_key)
-    if is_rpi:
-        asyncio.create_task(rpi_button_poll_loop(buttons))
-    return ret
-
-
-async def rpi_button_poll_loop(buttons):
-    """A polling loop which waits for a button to read 0 or 1 stably for a small amount of time, before registering a
-    button press."""
-
-    @dataclasses.dataclass
-    class PollState:
-        value: bool
-        timer: float
-
-    states = {button: PollState(False, time.time()) for button in buttons}
-
-    last_call = time.time()
-    for button in buttons:
-        now = time.time()
-        time_elapsed = now - last_call
-
-        current_state = states[button]
-        raw_value = button.rpi_button.value
-
-        if raw_value == current_state.value:
-            # No change, reset the timer
-            current_state.timer = _BUTTON_DEBOUNCE_PERIOD_SECS
-        else:
-            current_state.timer -= time_elapsed
-            if current_state.timer <= _BUTTON_DEBOUNCE_PERIOD_SECS:
-                # State change has been stable for long enough, emit a keypress
-                current_state.value = raw_value
-                current_state.timer = now
-                rpi_key_presses.append(button)
-        last_call = now
-        await asyncio.sleep(0.01)
+    return Buttons(buttons, buttons_by_key)
 
 
 def shuffled_buttons(buttons: Buttons):
@@ -177,14 +144,14 @@ def read_high_score():
     try:
         encoded_values = location.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
-        return _DEFAULT_HIGH_SCORE
+        return DEFAULT_HIGH_SCORE
 
     try:
         secs, microsecs = [int(val) for val in encoded_values.split(":")]
         return datetime.timedelta(seconds=secs, microseconds=microsecs)
     except ValueError:
         # If the file gets corrupted somehow then carry on anyway
-        return _DEFAULT_HIGH_SCORE
+        return DEFAULT_HIGH_SCORE
 
 
 def save_high_score(score):
@@ -199,26 +166,48 @@ def save_high_score(score):
         shutil.copy(temp_file_handle.name, save_file_location())
 
 
-async def main_loop(stdscr, is_rpi):
+def button_poll(buttons):
+    while True:
+        for button in buttons.buttons:
+            match button.rpi_button.value:
+                case 0:
+                    pass
+                case 1:
+
+                    with rpi_key_presses_lock:
+                        rpi_key_presses.append(button.key)
+
+                    # todo do this better, per button delay or something
+                    time.sleep(0.5)
+                case _:
+                    raise NotImplementedError()
+        time.sleep(0.01)
+
+
+def main_loop(stdscr, is_rpi):
     buttons = create_buttons(is_rpi)
     shuffled_buttons_iter = iter(shuffled_buttons(buttons))
     scores = Scores(current=datetime.timedelta(), high=read_high_score())
+    if is_rpi:
+        threading.Thread(target=button_poll, kwargs={"buttons": buttons}).start()
+    time.sleep(100)
+
     win_scores, win_footer, win_main = init_curses(stdscr)
     last_tick = time.time_ns()
     state = State.NOT_STARTED
     while True:
-        last_tick, time_elapsed = await calculate_time_elapsed(last_tick)
+        last_tick, time_elapsed = calculate_time_elapsed(last_tick)
 
-        keys, is_exit = await read_keys(stdscr)
+        keys, is_exit = read_keys(stdscr)
         if is_exit:
             break
 
         play_sounds(buttons, keys)
         update_button_lights(state, buttons, is_rpi)
-        state = await tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+        state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
         refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
 
-        await asyncio.sleep(0.01)
+        time.sleep(MAIN_LOOP_TICK_PERIOD)
 
 
 def init_curses(stdscr):
@@ -235,9 +224,9 @@ def init_curses(stdscr):
     # Create some windows to hold the different bits of text on the screen.  win_scores is the top
     # line and has current and high score, win_footer is the bottom line and has some constant
     # text, and win_main has everything else.
-    win_scores = curses.newwin(1, _WIN_COLS, 0, 0)
-    win_footer = curses.newwin(1, _WIN_COLS, _WIN_LINES - 1, 0)
-    win_main = curses.newwin(_WIN_LINES - 2, _WIN_COLS, 1, 0)
+    win_scores = curses.newwin(1, WIN_COLS, 0, 0)
+    win_footer = curses.newwin(1, WIN_COLS, WIN_LINES - 1, 0)
+    win_main = curses.newwin(WIN_LINES - 2, WIN_COLS, 1, 0)
 
     return win_scores, win_footer, win_main
 
@@ -266,16 +255,19 @@ def update_button_lights(state, buttons, is_rpi):
                     button.led.on()
                 else:
                     button.led.off()
+        case _:
+            for button in buttons.buttons:
+                button.led.off()
 
 
-async def calculate_time_elapsed(last_tick):
+def calculate_time_elapsed(last_tick):
     this_tick = time.time_ns()
     time_elapsed = datetime.timedelta(microseconds=(this_tick - last_tick) / 1000)
     last_tick = this_tick
     return last_tick, time_elapsed
 
 
-async def read_keys(stdscr):
+def read_keys(stdscr):
     keys = []
     is_exit = False
 
@@ -297,8 +289,10 @@ async def read_keys(stdscr):
             keys.append(chr(key).upper())
 
     # Read keys from RPi buttons
-    for button in rpi_key_presses:
-        keys.append(button.key)
+    with rpi_key_presses_lock:
+        for key in rpi_key_presses:
+            keys.append(key)
+        rpi_key_presses.clear()
 
     return keys, is_exit
 
@@ -316,15 +310,15 @@ def refresh_win_scores(win_scores, scores):
 
     win_scores.addstr(0, 0, f"{format_score(scores.current)} <- Current score")
     high_score_msg = f"High Score -> {format_score(scores.high)}"
-    win_scores.addstr(0, _WIN_COLS - len(high_score_msg) - 1, high_score_msg)
+    win_scores.addstr(0, WIN_COLS - len(high_score_msg) - 1, high_score_msg)
     win_scores.refresh()
 
 
 def refresh_win_main(win_main, state):
-    y_position = math.ceil((_WIN_LINES - 2) / 2)
+    y_position = math.ceil((WIN_LINES - 2) / 2)
 
     def centre_message(message):
-        win_main.addstr(y_position, math.ceil((_WIN_COLS - len(message)) / 2), message)
+        win_main.addstr(y_position, math.ceil((WIN_COLS - len(message)) / 2), message)
 
     win_main.move(y_position, 0)
     win_main.clrtoeol()
@@ -350,7 +344,7 @@ def format_score(score):
     return f"{score.seconds:02d}:{math.floor(score.microseconds / 10_000):02}"
 
 
-async def tick(
+def tick(
     state, scores, keys, time_elapsed, shuffled_buttons_iter
 ):  # pylint: disable=too-many-return-statements
     match state:
@@ -369,14 +363,14 @@ async def tick(
         case State.WaitingOnButton(round_=round_, button=button):
             scores.current += time_elapsed
 
-            if scores.current >= _TIMEOUT_SECS:
+            if scores.current >= TIMEOUT_SECS:
                 return State.GameFinished(last_score=scores.current)
 
             if keys:
                 first_key = keys[0]
                 if first_key != button.key:
                     scores.current += datetime.timedelta(seconds=5)
-                if round_ == _ROUNDS - 1:
+                if round_ == ROUNDS - 1:
                     if scores.current < scores.high:
                         scores.high = scores.current
                         save_high_score(scores.high)
@@ -404,8 +398,8 @@ def cool_down(round_):
 
 def validate_screen_size():
     if (
-        curses.COLS < _WIN_COLS  # pylint: disable=no-member
-        or curses.LINES < _WIN_LINES  # pylint: disable=no-member
+        curses.COLS < WIN_COLS  # pylint: disable=no-member
+        or curses.LINES < WIN_LINES  # pylint: disable=no-member
     ):
         raise ValueError("You need at least 80 cols and 20 lines on your terminal")
 
@@ -421,6 +415,6 @@ def main():
     is_rpi = parse_args()
 
     try:
-        curses.wrapper(lambda stdscr: asyncio.run(main_loop(stdscr, is_rpi)))
+        curses.wrapper(lambda stdscr: main_loop(stdscr, is_rpi))
     except KeyboardInterrupt:
         pass

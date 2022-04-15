@@ -5,10 +5,13 @@ Stuff which doesn't work / is a bit silly:
 * The way I'm using curses can't possibly be right..  why do I have to redraw the footer??
 """
 import argparse
+import collections
+import contextlib
 import curses
 import curses.ascii
 import dataclasses
 import datetime
+import logging
 import math
 import os
 import pathlib
@@ -34,7 +37,7 @@ BUTTON_POLL_TICK_PERIOD = 0.5
 MAIN_LOOP_TICK_PERIOD = 0.01
 
 
-@dataclasses.dataclass(unsafe_hash=True)  # todo yolo
+@dataclasses.dataclass(unsafe_hash=True)
 class Button:
     key: str
     audio_segment: simpleaudio.WaveObject
@@ -52,7 +55,15 @@ class StubButton:
 
 # A place to keep all the RPi buttons which have been pressed since the last tick.
 rpi_key_presses = []
-rpi_key_presses_lock = threading.RLock()  # todo make non blocking
+rpi_key_presses_lock = threading.RLock()
+
+@contextlib.contextmanager
+def acquire_rpi_key_presses():
+    did_acquire = rpi_key_presses_lock.acquire(blocking=True, timeout=0.01)
+    if not did_acquire:
+        raise ValueError("Unable to acquire lock")
+    yield
+    rpi_key_presses_lock.release()
 
 
 def new_button(is_rpi, key, sound, pin_led, pin_button):
@@ -167,21 +178,37 @@ def save_high_score(score):
 
 
 def button_poll(buttons):
-    while True:
-        for button in buttons.buttons:
-            match button.rpi_button.value:
-                case 0:
-                    pass
-                case 1:
+    button_state = collections.namedtuple("button_state", ["value", "delay"])
+    logging.info("Button poll loop start")
+    try:
+        states = {button.key: button_state(0, 0) for button in buttons}
+        last_tick = time.time()
+        while True:
+            now = time.time()
+            time_elapsed = now - last_tick
 
-                    with rpi_key_presses_lock:
-                        rpi_key_presses.append(button.key)
+            for button in buttons.buttons:
+                (state, delay) = states[button.key]
+                delay -= time_elapsed
 
-                    # todo do this better, per button delay or something
-                    time.sleep(0.5)
-                case _:
-                    raise NotImplementedError()
-        time.sleep(0.01)
+                if button.rpi_button.value != state and delay == 0:
+                    logging.info("Button state change %s->%s", state, button.rpi_button.value)
+                    states[button.key] = button_state(button.rpi_button.value, 0.1)
+
+                    match button.rpi_button.value:
+                        case 0:
+                            pass
+                        case 1:
+                            with acquire_rpi_key_presses():
+                                rpi_key_presses.append(button.key)
+                        case _:
+                            raise NotImplementedError()
+                else:
+                    states[button.key] = button_state(state, max(delay - time_elapsed, 0))
+            time.sleep(0.01)
+    except:
+        logging.exception("Button poll thread died")
+        raise
 
 
 def main_loop(stdscr, is_rpi):
@@ -189,13 +216,19 @@ def main_loop(stdscr, is_rpi):
     shuffled_buttons_iter = iter(shuffled_buttons(buttons))
     scores = Scores(current=datetime.timedelta(), high=read_high_score())
     if is_rpi:
-        threading.Thread(target=button_poll, kwargs={"buttons": buttons}).start()
+        button_poll_thread = threading.Thread(target=button_poll, kwargs={"buttons": buttons})
+        button_poll_thread.start()
+    else:
+        button_poll_thread = None
     time.sleep(100)
 
     win_scores, win_footer, win_main = init_curses(stdscr)
     last_tick = time.time_ns()
     state = State.NOT_STARTED
     while True:
+        if button_poll_thread and not button_poll_thread.is_alive():
+            raise ValueError("Button poll thread died")
+
         last_tick, time_elapsed = calculate_time_elapsed(last_tick)
 
         keys, is_exit = read_keys(stdscr)
@@ -289,7 +322,7 @@ def read_keys(stdscr):
             keys.append(chr(key).upper())
 
     # Read keys from RPi buttons
-    with rpi_key_presses_lock:
+    with acquire_rpi_key_presses():
         for key in rpi_key_presses:
             keys.append(key)
         rpi_key_presses.clear()

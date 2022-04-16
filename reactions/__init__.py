@@ -31,7 +31,7 @@ import reactions.sounds
 WIN_COLS = 80
 WIN_LINES = 20
 ROUNDS = 5
-DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=60)
+DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=99)
 TIMEOUT_SECS = datetime.timedelta(seconds=60)
 BUTTON_DEBOUNCE_PERIOD_SECS = 0.050  # 50 ms
 BUTTON_POLL_TICK_PERIOD = 0.5
@@ -130,6 +130,7 @@ def shuffled_buttons(buttons: Buttons):
 
 
 current_score_display = tm1637.TM1637(21, 20)
+high_score_display = tm1637.TM1637(19, 26)
 
 
 @dataclasses.dataclass
@@ -252,7 +253,7 @@ def main_loop(stdscr, is_rpi):
                 update_button_lights(state, buttons, is_rpi)
                 state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
                 refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
-                refresh_segment_displays(scores, state)
+                refresh_segment_displays(scores)
 
                 time.sleep(MAIN_LOOP_TICK_PERIOD)
         finally:
@@ -394,10 +395,14 @@ def format_score(score):
 
 
 def refresh_segment_displays(scores):
-    # TODO should make this have a ":"
-    # TODO Add microseconds, pad zeros, etc
-    s = scores.current.seconds
-    current_score_display.write(current_score_display.encode_string(s))
+    refresh_segment_display(scores.current, current_score_display)
+    refresh_segment_display(scores.high, high_score_display)
+
+
+def refresh_segment_display(score, display):
+    secs = min(score.seconds, 99)
+    centi_secs = math.floor(score.microseconds / 10_000)
+    display.numbers(secs, centi_secs)
 
 
 def tick(

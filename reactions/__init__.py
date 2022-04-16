@@ -211,6 +211,8 @@ def button_poll(buttons):
                             raise NotImplementedError()
                 else:
                     states[button.key] = button_state(state, max(delay - time_elapsed, 0))
+
+            last_tick = now
             time.sleep(1)
     except:
         logging.exception("Button poll thread died")

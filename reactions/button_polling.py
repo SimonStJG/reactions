@@ -52,13 +52,13 @@ def _polling_thread_target(buttons, tick_period_seconds, debounce_period_seconds
     button_state = collections.namedtuple("button_state", ["value", "delay"])
     logging.info("Button poll loop start")
     try:
-        states = {button.key: button_state(0, 0) for button in buttons.buttons}
+        states = {button.key: button_state(0, 0) for button in buttons}
         last_tick = time.time()
         while not _BUTTON_POLL_THREAD_EXIT.is_set():
             now = time.time()
             time_elapsed = now - last_tick
 
-            for button in buttons.buttons:
+            for button in buttons:
                 (state, delay) = states[button.key]
                 delay = max(0, delay - time_elapsed)
                 logging.info(((state, delay), button.rpi_button.value))

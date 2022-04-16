@@ -24,6 +24,7 @@ from typing import Dict, List
 
 import gpiozero
 import simpleaudio
+import tm1637
 
 import reactions.sounds
 
@@ -128,8 +129,7 @@ def shuffled_buttons(buttons: Buttons):
         yield from pool
 
 
-# TODO vendor or rewrite
-segment_display = tm1637.TM1637(21, 20)
+current_score_display = tm1637.TM1637(21, 20)
 
 
 @dataclasses.dataclass
@@ -397,7 +397,7 @@ def refresh_segment_displays(scores):
     # TODO should make this have a ":"
     # TODO Add microseconds, pad zeros, etc
     s = scores.current.seconds
-    segment_display.write(segment_display.encode_string(s))
+    current_score_display.write(current_score_display.encode_string(s))
 
 
 def tick(

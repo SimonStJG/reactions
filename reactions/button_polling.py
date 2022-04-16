@@ -31,12 +31,14 @@ def polling_thread(buttons, tick_period_seconds, debounce_period_seconds):
         },
     )
     _BUTTON_POLL_THREAD.start()
-    yield
 
-    _BUTTON_POLL_THREAD_EXIT.set()
-    _BUTTON_POLL_THREAD.join(timeout=tick_period_seconds * 5)
-    if _BUTTON_POLL_THREAD.is_alive():
-        logging.error("Button poll thread didn't shutdown")
+    try:
+        yield
+    finally:
+        _BUTTON_POLL_THREAD_EXIT.set()
+        _BUTTON_POLL_THREAD.join(timeout=tick_period_seconds * 5)
+        if _BUTTON_POLL_THREAD.is_alive():
+            logging.error("Button poll thread didn't shutdown")
 
 
 @contextlib.contextmanager
@@ -44,8 +46,10 @@ def _acquire_rpi_key_presses():
     did_acquire = _RPI_KEY_PRESSES_LOCK.acquire(blocking=True, timeout=0.01)
     if not did_acquire:
         raise ValueError("Unable to acquire lock")
-    yield
-    _RPI_KEY_PRESSES_LOCK.release()
+    try:
+        yield
+    finally:
+        _RPI_KEY_PRESSES_LOCK.release()
 
 
 def _polling_thread_target(buttons, tick_period_seconds, debounce_period_seconds):
@@ -61,7 +65,6 @@ def _polling_thread_target(buttons, tick_period_seconds, debounce_period_seconds
             for button in buttons:
                 (state, delay) = states[button.key]
                 delay = max(0, delay - time_elapsed)
-                logging.info(((state, delay), button.rpi_button.value))
                 if button.rpi_button.value != state and delay == 0:
                     logging.info(
                         "Button state change %s->%s", state, button.rpi_button.value

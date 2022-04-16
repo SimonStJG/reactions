@@ -106,8 +106,8 @@ class Buttons:
 @contextlib.contextmanager
 def create_buttons(is_rpi):
     buttons = [
-        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 17, 4),
-        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 27, 5),
+        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 17, 5),
+        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 27, 4),
         # new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 7, 13),
         # new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 8, 14),
         # new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 9, 15),

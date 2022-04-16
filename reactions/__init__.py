@@ -220,7 +220,6 @@ def main_loop(stdscr, is_rpi):
         button_poll_thread.start()
     else:
         button_poll_thread = None
-    time.sleep(100)
 
     win_scores, win_footer, win_main = init_curses(stdscr)
     last_tick = time.time_ns()
@@ -445,6 +444,7 @@ def parse_args():
 
 
 def main():
+    logging.basicConfig(filename="reactions.log")
     is_rpi = parse_args()
 
     try:

@@ -101,6 +101,7 @@ class Buttons:
     buttons_by_key: Dict[str, Button]
 
 
+@contextlib.contextmanager
 def create_buttons(is_rpi):
     buttons = [
         new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 17, 4),
@@ -111,8 +112,12 @@ def create_buttons(is_rpi):
         # new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 10, 16),
         # new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
     ]
-    buttons_by_key = {button.key: button for button in buttons}
-    return Buttons(buttons, buttons_by_key)
+    try:
+        buttons_by_key = {button.key: button for button in buttons}
+        yield Buttons(buttons, buttons_by_key)
+    finally:
+        for button in buttons:
+            button.rpi_button.close()
 
 
 def shuffled_buttons(buttons: Buttons):
@@ -191,7 +196,7 @@ def button_poll(buttons):
             for button in buttons.buttons:
                 (state, delay) = states[button.key]
                 delay -= time_elapsed
-
+                logging.info(((state, delay), button.rpi_button.value))
                 if button.rpi_button.value != state and delay == 0:
                     logging.info("Button state change %s->%s", state, button.rpi_button.value)
                     states[button.key] = button_state(button.rpi_button.value, 0.1)
@@ -206,42 +211,42 @@ def button_poll(buttons):
                             raise NotImplementedError()
                 else:
                     states[button.key] = button_state(state, max(delay - time_elapsed, 0))
-            time.sleep(0.01)
+            time.sleep(1)
     except:
         logging.exception("Button poll thread died")
         raise
 
 
 def main_loop(stdscr, is_rpi):
-    buttons = create_buttons(is_rpi)
-    shuffled_buttons_iter = iter(shuffled_buttons(buttons))
-    scores = Scores(current=datetime.timedelta(), high=read_high_score())
-    if is_rpi:
+    with create_buttons(is_rpi) as buttons:
+        shuffled_buttons_iter = iter(shuffled_buttons(buttons))
+        scores = Scores(current=datetime.timedelta(), high=read_high_score())
+        if is_rpi:
 
-        button_poll_thread = threading.Thread(target=button_poll, kwargs={"buttons": buttons})
-        button_poll_thread.start()
-    else:
-        button_poll_thread = None
+            button_poll_thread = threading.Thread(target=button_poll, kwargs={"buttons": buttons})
+            button_poll_thread.start()
+        else:
+            button_poll_thread = None
 
-    win_scores, win_footer, win_main = init_curses(stdscr)
-    last_tick = time.time_ns()
-    state = State.NOT_STARTED
-    while True:
-        if button_poll_thread and not button_poll_thread.is_alive():
-            raise ValueError("Button poll thread died")
+        win_scores, win_footer, win_main = init_curses(stdscr)
+        last_tick = time.time_ns()
+        state = State.NOT_STARTED
+        while True:
+            if button_poll_thread and not button_poll_thread.is_alive():
+                raise ValueError("Button poll thread died")
 
-        last_tick, time_elapsed = calculate_time_elapsed(last_tick)
+            last_tick, time_elapsed = calculate_time_elapsed(last_tick)
 
-        keys, is_exit = read_keys(stdscr)
-        if is_exit:
-            break
+            keys, is_exit = read_keys(stdscr)
+            if is_exit:
+                break
 
-        play_sounds(buttons, keys)
-        update_button_lights(state, buttons, is_rpi)
-        state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
-        refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
+            play_sounds(buttons, keys)
+            update_button_lights(state, buttons, is_rpi)
+            state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+            refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
 
-        time.sleep(MAIN_LOOP_TICK_PERIOD)
+            time.sleep(MAIN_LOOP_TICK_PERIOD)
 
 
 def init_curses(stdscr):

@@ -201,10 +201,12 @@ def button_poll(buttons):
 
             for button in buttons.buttons:
                 (state, delay) = states[button.key]
-                delay = max(0, delay-time_elapsed)
+                delay = max(0, delay - time_elapsed)
                 logging.info(((state, delay), button.rpi_button.value))
                 if button.rpi_button.value != state and delay == 0:
-                    logging.info("Button state change %s->%s", state, button.rpi_button.value)
+                    logging.info(
+                        "Button state change %s->%s", state, button.rpi_button.value
+                    )
                     states[button.key] = button_state(button.rpi_button.value, 0.1)
 
                     match button.rpi_button.value:
@@ -231,7 +233,9 @@ def main_loop(stdscr, is_rpi):
         scores = Scores(current=datetime.timedelta(), high=read_high_score())
         if is_rpi:
 
-            button_poll_thread = threading.Thread(target=button_poll, kwargs={"buttons": buttons})
+            button_poll_thread = threading.Thread(
+                target=button_poll, kwargs={"buttons": buttons}
+            )
             button_poll_thread.start()
         else:
             button_poll_thread = None
@@ -253,7 +257,7 @@ def main_loop(stdscr, is_rpi):
                 update_button_lights(state, buttons, is_rpi)
                 state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
                 refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
-                refresh_segment_displays(scores)
+                refresh_segment_displays(scores, state)
 
                 time.sleep(MAIN_LOOP_TICK_PERIOD)
         finally:
@@ -394,8 +398,15 @@ def format_score(score):
     return f"{score.seconds:02d}:{math.floor(score.microseconds / 10_000):02}"
 
 
-def refresh_segment_displays(scores):
-    refresh_segment_display(scores.current, current_score_display)
+def refresh_segment_displays(scores, state):
+    match state:
+        case State.NOT_STARTED:
+            clear_segment_display(current_score_display)
+        case State.GameFinished:
+            clear_segment_display(current_score_display)
+        case _:
+            refresh_segment_display(scores.current, current_score_display)
+
     refresh_segment_display(scores.high, high_score_display)
 
 
@@ -403,6 +414,10 @@ def refresh_segment_display(score, display):
     secs = min(score.seconds, 99)
     centi_secs = math.floor(score.microseconds / 10_000)
     display.numbers(secs, centi_secs)
+
+
+def clear_segment_display(display):
+    display.write([0, 0, 0, 0])
 
 
 def tick(

@@ -197,7 +197,7 @@ def button_poll(buttons):
 
             for button in buttons.buttons:
                 (state, delay) = states[button.key]
-                delay -= time_elapsed
+                delay = max(0, delay-time_elapsed)
                 logging.info(((state, delay), button.rpi_button.value))
                 if button.rpi_button.value != state and delay == 0:
                     logging.info("Button state change %s->%s", state, button.rpi_button.value)
@@ -212,7 +212,7 @@ def button_poll(buttons):
                         case _:
                             raise NotImplementedError()
                 else:
-                    states[button.key] = button_state(state, max(delay - time_elapsed, 0))
+                    states[button.key] = button_state(state, delay)
 
             last_tick = now
             time.sleep(1)

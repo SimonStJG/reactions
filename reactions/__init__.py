@@ -217,6 +217,7 @@ def main_loop(stdscr, is_rpi):
     shuffled_buttons_iter = iter(shuffled_buttons(buttons))
     scores = Scores(current=datetime.timedelta(), high=read_high_score())
     if is_rpi:
+
         button_poll_thread = threading.Thread(target=button_poll, kwargs={"buttons": buttons})
         button_poll_thread.start()
     else:
@@ -445,7 +446,7 @@ def parse_args():
 
 
 def main():
-    logging.basicConfig(filename="reactions.log")
+    logging.basicConfig(filename="reactions.log", level=logging.INFO)
     is_rpi = parse_args()
 
     try:

@@ -68,7 +68,6 @@ def acquire_rpi_key_presses():
     rpi_key_presses_lock.release()
 
 
-
 def new_button(is_rpi, key, sound, pin_led, pin_button):
     # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
     # mysterious comments on the internet told me to do this, which did fix it:
@@ -127,6 +126,10 @@ def shuffled_buttons(buttons: Buttons):
         pool = buttons.buttons + buttons.buttons
         random.shuffle(pool)
         yield from pool
+
+
+# TODO vendor or rewrite
+segment_display = tm1637.TM1637(21, 20)
 
 
 @dataclasses.dataclass
@@ -249,6 +252,7 @@ def main_loop(stdscr, is_rpi):
                 update_button_lights(state, buttons, is_rpi)
                 state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
                 refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
+                refresh_segment_displays(scores, state)
 
                 time.sleep(MAIN_LOOP_TICK_PERIOD)
         finally:
@@ -389,11 +393,19 @@ def format_score(score):
     return f"{score.seconds:02d}:{math.floor(score.microseconds / 10_000):02}"
 
 
+def refresh_segment_displays(scores):
+    # TODO should make this have a ":"
+    # TODO Add microseconds, pad zeros, etc
+    s = scores.current.seconds
+    segment_display.write(segment_display.encode_string(s))
+
+
 def tick(
     state, scores, keys, time_elapsed, shuffled_buttons_iter
 ):  # pylint: disable=too-many-return-statements
     match state:
         case State.NOT_STARTED:
+            # TODO should be new game button
             if " " in keys:
                 return cool_down(round_=0)
 

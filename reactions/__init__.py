@@ -59,11 +59,12 @@ rpi_key_presses_lock = threading.RLock()
 
 @contextlib.contextmanager
 def acquire_rpi_key_presses():
-    did_acquire = rpi_key_presses_lock.acquire(blocking=True, timeout=0.01)
-    if not did_acquire:
-        raise ValueError("Unable to acquire lock")
+    # did_acquire = rpi_key_presses_lock.acquire(blocking=True, timeout=0.01)
+    # if not did_acquire:
+    #     raise ValueError("Unable to acquire lock")
+    # yield
+    # rpi_key_presses_lock.release()
     yield
-    rpi_key_presses_lock.release()
 
 
 def new_button(is_rpi, key, sound, pin_led, pin_button):

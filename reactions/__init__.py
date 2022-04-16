@@ -181,7 +181,7 @@ def button_poll(buttons):
     button_state = collections.namedtuple("button_state", ["value", "delay"])
     logging.info("Button poll loop start")
     try:
-        states = {button.key: button_state(0, 0) for button in buttons}
+        states = {button.key: button_state(0, 0) for button in buttons.buttons}
         last_tick = time.time()
         while True:
             now = time.time()

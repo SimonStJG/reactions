@@ -56,6 +56,8 @@ class StubButton:
 # A place to keep all the RPi buttons which have been pressed since the last tick.
 rpi_key_presses = []
 rpi_key_presses_lock = threading.RLock()
+button_poll_thread_exit = threading.Event()
+
 
 @contextlib.contextmanager
 def acquire_rpi_key_presses():
@@ -189,7 +191,7 @@ def button_poll(buttons):
     try:
         states = {button.key: button_state(0, 0) for button in buttons.buttons}
         last_tick = time.time()
-        while True:
+        while not button_poll_thread_exit.is_set():
             now = time.time()
             time_elapsed = now - last_tick
 
@@ -229,26 +231,28 @@ def main_loop(stdscr, is_rpi):
             button_poll_thread.start()
         else:
             button_poll_thread = None
+        try:
+            win_scores, win_footer, win_main = init_curses(stdscr)
+            last_tick = time.time_ns()
+            state = State.NOT_STARTED
+            while True:
+                if button_poll_thread and not button_poll_thread.is_alive():
+                    raise ValueError("Button poll thread died")
 
-        win_scores, win_footer, win_main = init_curses(stdscr)
-        last_tick = time.time_ns()
-        state = State.NOT_STARTED
-        while True:
-            if button_poll_thread and not button_poll_thread.is_alive():
-                raise ValueError("Button poll thread died")
+                last_tick, time_elapsed = calculate_time_elapsed(last_tick)
 
-            last_tick, time_elapsed = calculate_time_elapsed(last_tick)
+                keys, is_exit = read_keys(stdscr)
+                if is_exit:
+                    break
 
-            keys, is_exit = read_keys(stdscr)
-            if is_exit:
-                break
+                play_sounds(buttons, keys)
+                update_button_lights(state, buttons, is_rpi)
+                state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+                refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
 
-            play_sounds(buttons, keys)
-            update_button_lights(state, buttons, is_rpi)
-            state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
-            refresh_curses_windows(scores, state, win_footer, win_main, win_scores)
-
-            time.sleep(MAIN_LOOP_TICK_PERIOD)
+                time.sleep(MAIN_LOOP_TICK_PERIOD)
+        finally:
+            button_poll_thread_exit.set()
 
 
 def init_curses(stdscr):

@@ -215,7 +215,7 @@ def button_poll(buttons):
                     states[button.key] = button_state(state, delay)
 
             last_tick = now
-            time.sleep(1)
+            time.sleep(0.01)
     except:
         logging.exception("Button poll thread died")
         raise

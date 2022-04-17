@@ -25,6 +25,7 @@ _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 _BUTTON_DEBOUNCE_PERIOD_SECONDS = 0.050  # 50 ms
 _BUTTON_POLL_TICK_PERIOD_SECONDS = 0.01
 _MAIN_LOOP_TICK_PERIOD_SECONDS = 0.01
+_NEW_GAME_KEY = "N"
 
 
 @dataclasses.dataclass(unsafe_hash=True)
@@ -43,7 +44,7 @@ def new_button(is_rpi, key, sound, pin_led, pin_button):
     # done
     wave_object = simpleaudio.WaveObject.from_wave_file(str(sounds.SOUNDS_ROOT / sound))
 
-    if is_rpi:
+    if is_rpi and pin_led is not None:
         led = gpiozero.LED(pin_led)
     else:
         led = None
@@ -63,13 +64,13 @@ def new_button(is_rpi, key, sound, pin_led, pin_button):
 
 @dataclasses.dataclass
 class Buttons:
-    buttons: List[_Button]
+    in_game_buttons: List[_Button]
     buttons_by_key: Dict[str, _Button]
 
 
 @contextlib.contextmanager
 def create_buttons(is_rpi):
-    buttons = [
+    in_game_buttons = [
         new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 17, 5),
         new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 27, 4),
         # new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 7, 13),
@@ -78,26 +79,29 @@ def create_buttons(is_rpi):
         # new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 10, 16),
         # new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
     ]
+    new_game_button = new_button(
+        is_rpi, _NEW_GAME_KEY, "mixkit-stallion-horse-neigh-1762.wav", None, 16
+    )
     try:
-        buttons_by_key = {button.key: button for button in buttons}
+        buttons_by_key = {button.key: button for button in in_game_buttons}
         if is_rpi:
             with button_polling.polling_thread(
-                buttons,
+                in_game_buttons + [new_game_button],
                 _BUTTON_POLL_TICK_PERIOD_SECONDS,
                 _BUTTON_DEBOUNCE_PERIOD_SECONDS,
             ):
-                yield Buttons(buttons, buttons_by_key)
+                yield Buttons(in_game_buttons, buttons_by_key)
         else:
-            yield Buttons(buttons, buttons_by_key)
+            yield Buttons(in_game_buttons, buttons_by_key)
     finally:
-        for button in buttons:
+        for button in in_game_buttons:
             if button.rpi_button:
                 button.rpi_button.close()
 
 
 def shuffled_buttons(buttons: Buttons):
     while True:
-        pool = buttons.buttons + buttons.buttons
+        pool = buttons.in_game_buttons + buttons.in_game_buttons
         random.shuffle(pool)
         yield from pool
 
@@ -109,7 +113,7 @@ class Scores:
 
 
 def main_loop(stdscr, is_rpi):
-    displays = segment_display.get_displays(is_rpi)
+    displays = segment_display.displays(is_rpi)
 
     with create_buttons(is_rpi) as buttons:
         shuffled_buttons_iter = iter(shuffled_buttons(buttons))
@@ -131,10 +135,10 @@ def main_loop(stdscr, is_rpi):
                 break
 
             play_sounds(buttons, keys)
-            update_button_lights(state, buttons, is_rpi)
             state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
             screen.refresh(scores, state, win_footer, win_main, win_scores)
-            segment_display.refresh(displays, scores, state)
+            displays.refresh(scores, state)
+            refresh_button_lights(state, buttons, is_rpi)
 
             time.sleep(_MAIN_LOOP_TICK_PERIOD_SECONDS)
 
@@ -146,19 +150,19 @@ def play_sounds(buttons, keys):
             button.audio_segment.play()
 
 
-def update_button_lights(state, buttons, is_rpi):
+def refresh_button_lights(state, buttons, is_rpi):
     if not is_rpi:
         return
 
     match state:
         case states.WaitingOnButton(button=waited_on_button):
-            for button in buttons.buttons:
+            for button in buttons.in_game_buttons:
                 if button == waited_on_button:
                     button.led.on()
                 else:
                     button.led.off()
         case _:
-            for button in buttons.buttons:
+            for button in buttons.in_game_buttons:
                 button.led.off()
 
 
@@ -181,8 +185,7 @@ def tick(
 ):  # pylint: disable=too-many-return-statements
     match state:
         case states.NOT_STARTED:
-            # TODO should be new game button
-            if " " in keys:
+            if _NEW_GAME_KEY in keys:
                 return states.cool_down(round_=0)
 
         case states.CoolDown(round_=round_, delay=delay, elapsed=elapsed):
@@ -213,7 +216,7 @@ def tick(
                 return states.cool_down(round_=round_ + 1)
 
         case states.GameFinished():
-            if keys:
+            if _NEW_GAME_KEY in keys:
                 scores.current = datetime.timedelta()
                 return states.cool_down(round_=0)
 

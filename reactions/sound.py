@@ -39,6 +39,7 @@ class BackgroundMusic:
                 self.play()
                 self.is_finished = False
             case states.GameFinished():
+                self.stop()
                 if not self.is_finished:
                     try_play_audio(self.game_finished_wave_object)
                 self.is_finished = True

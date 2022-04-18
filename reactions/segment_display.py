@@ -26,7 +26,7 @@ class Displays(handler.Handler):
                 self.current.text("GOOD")
                 self.high_score.text("LUCK")
             case states.GameFinished():
-                self.current.text("OVER")
+                self.current.write_score(scores.current)
                 self.high_score.write_score(scores.high)
             case _:
                 self.current.write_score(scores.current)

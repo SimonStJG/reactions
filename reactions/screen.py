@@ -75,15 +75,15 @@ def _refresh_win_main(win_main, state):
 
     match state:
         case states.NOT_STARTED:
-            centre_message("Press space bar to start")
+            centre_message("Press N to start")
+        case states.GameAboutToStart():
+            centre_message("Get Ready...")
         case states.CoolDown():
-            centre_message("Get Ready")
+            centre_message("Get Ready..")
         case states.WaitingOnButton(button=button):
             centre_message(f"Press button: {button.key}")
         case states.GameFinished(last_score=last_score):
-            centre_message(
-                f"Your score: {format_score(last_score)}.  Press any key to play again."
-            )
+            centre_message(f"Your score: {format_score(last_score)}.  Press N to play again.")
         case _:
             raise NotImplementedError(state)
 

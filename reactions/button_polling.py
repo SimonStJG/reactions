@@ -10,6 +10,8 @@ _RPI_KEY_PRESSES_LOCK = threading.RLock()
 _BUTTON_POLL_THREAD: Optional[threading.Thread] = None
 _BUTTON_POLL_THREAD_EXIT = threading.Event()
 
+logger = logging.getLogger(__name__)
+
 
 def read_keys(keys):
     with _acquire_rpi_key_presses():
@@ -20,6 +22,7 @@ def read_keys(keys):
 
 @contextlib.contextmanager
 def polling_thread(buttons, tick_period_seconds, debounce_period_seconds):
+    # pylint: disable=global-statement
     global _BUTTON_POLL_THREAD
 
     _BUTTON_POLL_THREAD = threading.Thread(
@@ -38,7 +41,7 @@ def polling_thread(buttons, tick_period_seconds, debounce_period_seconds):
         _BUTTON_POLL_THREAD_EXIT.set()
         _BUTTON_POLL_THREAD.join(timeout=tick_period_seconds * 5)
         if _BUTTON_POLL_THREAD.is_alive():
-            logging.error("Button poll thread didn't shutdown")
+            logger.error("Button poll thread didn't shutdown")
 
 
 @contextlib.contextmanager
@@ -54,7 +57,7 @@ def _acquire_rpi_key_presses():
 
 def _polling_thread_target(buttons, tick_period_seconds, debounce_period_seconds):
     button_state = collections.namedtuple("button_state", ["value", "delay"])
-    logging.info("Button poll loop start")
+    logger.info("Button poll loop start")
     try:
         states = {button.key: button_state(0, 0) for button in buttons}
         last_tick = time.time()
@@ -66,9 +69,7 @@ def _polling_thread_target(buttons, tick_period_seconds, debounce_period_seconds
                 (state, delay) = states[button.key]
                 delay = max(0, delay - time_elapsed)
                 if button.rpi_button.value != state and delay == 0:
-                    logging.info(
-                        "Button state change %s->%s", state, button.rpi_button.value
-                    )
+                    logger.info("Button state change %s->%s", state, button.rpi_button.value)
                     states[button.key] = button_state(
                         button.rpi_button.value, debounce_period_seconds
                     )
@@ -87,7 +88,7 @@ def _polling_thread_target(buttons, tick_period_seconds, debounce_period_seconds
             last_tick = now
             time.sleep(tick_period_seconds)
     except:
-        logging.exception("Button poll thread died")
+        logger.exception("Button poll thread died")
         raise
 
 

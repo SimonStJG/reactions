@@ -6,6 +6,11 @@ import random
 NOT_STARTED = "NOT_STARTED"
 
 
+@dataclasses.dataclass
+class GameAboutToStart:
+    elapsed: datetime.timedelta
+
+
 @dataclasses.dataclass()
 class CoolDown:
     round_: int

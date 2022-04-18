@@ -17,6 +17,8 @@ from reactions import (
     high_score,
     states,
     sounds,
+    button_lights,
+    sound,
 )
 
 _ROUNDS = 5
@@ -26,6 +28,9 @@ _BUTTON_DEBOUNCE_PERIOD_SECONDS = 0.050  # 50 ms
 _BUTTON_POLL_TICK_PERIOD_SECONDS = 0.01
 _MAIN_LOOP_TICK_PERIOD_SECONDS = 0.01
 _NEW_GAME_KEY = "N"
+_GAME_ABOUT_TO_START_DURATION = datetime.timedelta(seconds=3)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(unsafe_hash=True)
@@ -36,13 +41,13 @@ class _Button:
     rpi_button: Optional[gpiozero.Button]
 
 
-def new_button(is_rpi, key, sound, pin_led, pin_button):
+def new_button(is_rpi, key, sound_, pin_led, pin_button):
     # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
     # mysterious comments on the internet told me to do this, which did fix it:
     # for file in $(ls -1 originals | grep wav); do
     #   sox originals/$file -b 16 -e signed-integer $file
     # done
-    wave_object = simpleaudio.WaveObject.from_wave_file(str(sounds.SOUNDS_ROOT / sound))
+    wave_object = simpleaudio.WaveObject.from_wave_file(str(sounds.SOUNDS_ROOT / sound_))
 
     if is_rpi and pin_led is not None:
         led = gpiozero.LED(pin_led)
@@ -83,7 +88,7 @@ def create_buttons(is_rpi):
         is_rpi, _NEW_GAME_KEY, "mixkit-stallion-horse-neigh-1762.wav", None, 16
     )
     try:
-        buttons_by_key = {button.key: button for button in in_game_buttons}
+        buttons_by_key = {button.key: button for button in in_game_buttons + [new_game_button]}
         if is_rpi:
             with button_polling.polling_thread(
                 in_game_buttons + [new_game_button],
@@ -113,10 +118,13 @@ class Scores:
 
 
 def main_loop(stdscr, is_rpi):
-    displays = segment_display.displays(is_rpi)
+    with contextlib.ExitStack() as exit_stack:
+        displays = exit_stack.enter_context(segment_display.displays(is_rpi))
+        buttons = exit_stack.enter_context(create_buttons(is_rpi))
+        background_music = exit_stack.enter_context(sound.BackgroundMusic())
 
-    with create_buttons(is_rpi) as buttons:
         shuffled_buttons_iter = iter(shuffled_buttons(buttons))
+        lights = button_lights.button_lights(buttons, is_rpi)
         scores = Scores(
             current=datetime.timedelta(),
             high=high_score.read_high_score(default_high_score=_DEFAULT_HIGH_SCORE),
@@ -138,7 +146,8 @@ def main_loop(stdscr, is_rpi):
             state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
             screen.refresh(scores, state, win_footer, win_main, win_scores)
             displays.refresh(scores, state)
-            refresh_button_lights(state, buttons, is_rpi)
+            lights.refresh(state, time_elapsed)
+            background_music.refresh(state)
 
             time.sleep(_MAIN_LOOP_TICK_PERIOD_SECONDS)
 
@@ -147,23 +156,7 @@ def play_sounds(buttons, keys):
     for key in keys:
         button = buttons.buttons_by_key.get(key, None)
         if button:
-            button.audio_segment.play()
-
-
-def refresh_button_lights(state, buttons, is_rpi):
-    if not is_rpi:
-        return
-
-    match state:
-        case states.WaitingOnButton(button=waited_on_button):
-            for button in buttons.in_game_buttons:
-                if button == waited_on_button:
-                    button.led.on()
-                else:
-                    button.led.off()
-        case _:
-            for button in buttons.in_game_buttons:
-                button.led.off()
+            sound.try_play_audio(button.audio_segment)
 
 
 def calculate_time_elapsed(last_tick):
@@ -185,20 +178,38 @@ def tick(
 ):  # pylint: disable=too-many-return-statements
     match state:
         case states.NOT_STARTED:
+            # The game hasn't started yet.  When someone hits the new game key, start a new game.
             if _NEW_GAME_KEY in keys:
-                return states.cool_down(round_=0)
+                return states.GameAboutToStart(elapsed=datetime.timedelta())
+
+        case states.GameAboutToStart(elapsed=elapsed):
+            # The game is about to start.  Time elapsed ticks up until it's greater than
+            # _GAME_ABOUT_TO_START_DURATION, then the game starts by choosing the first button.
+            new_elapsed = elapsed + time_elapsed
+            if new_elapsed >= _GAME_ABOUT_TO_START_DURATION:
+                return states.WaitingOnButton(0, button=next(shuffled_buttons_iter))
+            state.elapsed = new_elapsed
+            return state
 
         case states.CoolDown(round_=round_, delay=delay, elapsed=elapsed):
+            # A button has just been pressed, wait for cool down delay to end before choosing a new
+            # target button.  elapsed ticks up until it's greater than delay, then a new button is
+            # chosen.
             new_elapsed = elapsed + time_elapsed
             if new_elapsed >= delay:
-                return states.WaitingOnButton(
-                    round_, button=next(shuffled_buttons_iter)
-                )
+                return states.WaitingOnButton(round_, button=next(shuffled_buttons_iter))
 
             state.elapsed = new_elapsed
             return state
 
         case states.WaitingOnButton(round_=round_, button=button):
+            # Waiting for someone to hit the right button.
+            # * If the game has taken longer than _TIMEOUT_SECS then go to GameFinished.
+            # * If someone managed to hit two keys at once then they are a superhuman, so don't
+            #   worry about this and just look at the first key.
+            # * If the key is wrong then add a penalty to the clock.
+            # * If we've had enough rounds then save the high score and finish the game, otherwise
+            #   enter CoolDown.
             scores.current += time_elapsed
 
             if scores.current >= _TIMEOUT_SECS:
@@ -216,9 +227,9 @@ def tick(
                 return states.cool_down(round_=round_ + 1)
 
         case states.GameFinished():
+            # The game has finished,
             if _NEW_GAME_KEY in keys:
-                scores.current = datetime.timedelta()
-                return states.cool_down(round_=0)
+                return states.GameAboutToStart(elapsed=datetime.timedelta())
 
         case _:
             raise NotImplementedError(state)

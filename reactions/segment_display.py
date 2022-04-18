@@ -1,3 +1,4 @@
+import contextlib
 import math
 
 import tm1637
@@ -14,16 +15,27 @@ class Displays:
         match state:
             case states.NOT_STARTED:
                 self.current.clear()
-            case states.GameFinished:
-                self.current.clear()
+                self.high_score.write_score(scores.high)
+            case states.GameAboutToStart():
+                self.current.text("GOOD")
+                self.high_score.text("LUCK")
+            case states.GameFinished():
+                self.current.text("OVER")
+                self.high_score.write_score(scores.high)
             case _:
                 self.current.write_score(scores.current)
+                self.high_score.write_score(scores.high)
 
-        self.high_score.write_score(scores.high)
+    def clear(self):
+        self.current.clear()
+        self.high_score.clear()
 
 
 class StubDisplays:
     def refresh(self, *args, **kwargs):
+        pass
+
+    def clear(self):
         pass
 
 
@@ -47,8 +59,19 @@ class Display:
             self.device.numbers(secs, centi_secs)
             self.state = ("numbers", secs, centi_secs)
 
+    def text(self, message):
+        if self.state != ("text", message):
+            self.device.write(self.device.encode_string(message))
+            self.state = ("text", message)
 
+
+@contextlib.contextmanager
 def displays(is_rpi):
     if is_rpi:
-        return Displays(Display(tm1637.TM1637(21, 20)), Display(tm1637.TM1637(19, 26)))
-    return StubDisplays()
+        ret = Displays(Display(tm1637.TM1637(21, 20)), Display(tm1637.TM1637(19, 26)))
+    else:
+        ret = StubDisplays()
+    try:
+        yield ret
+    finally:
+        ret.clear()

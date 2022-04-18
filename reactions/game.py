@@ -3,6 +3,7 @@ import contextlib
 import dataclasses
 import datetime
 import logging
+import logging.handlers
 import random
 import time
 from typing import List, Dict, Optional
@@ -118,21 +119,28 @@ class Scores:
 
 
 def main_loop(stdscr, is_rpi):
+    handlers = []
+
     with contextlib.ExitStack() as exit_stack:
-        displays = exit_stack.enter_context(segment_display.displays(is_rpi))
         buttons = exit_stack.enter_context(create_buttons(is_rpi))
-        background_music = exit_stack.enter_context(sound.BackgroundMusic())
+
+        def register(handler):
+            handlers.append(exit_stack.enter_context(handler))
+
+        register(screen.Screen(stdscr))
+        register(segment_display.displays(is_rpi))
+        register(sound.BackgroundMusic())
+        register(button_lights.button_lights(buttons, is_rpi))
 
         shuffled_buttons_iter = iter(shuffled_buttons(buttons))
-        lights = button_lights.button_lights(buttons, is_rpi)
+
         scores = Scores(
             current=datetime.timedelta(),
             high=high_score.read_high_score(default_high_score=_DEFAULT_HIGH_SCORE),
         )
 
-        win_scores, win_footer, win_main = screen.init(stdscr)
         last_tick = time.time_ns()
-        state = states.NOT_STARTED
+        state = states.NotStarted()
         while True:
             button_polling.check_polling_thread_alive()
 
@@ -143,11 +151,10 @@ def main_loop(stdscr, is_rpi):
                 break
 
             play_sounds(buttons, keys)
-            state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
-            screen.refresh(scores, state, win_footer, win_main, win_scores)
-            displays.refresh(scores, state)
-            lights.refresh(state, time_elapsed)
-            background_music.refresh(state)
+            is_state_change, state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+
+            for handler in handlers:
+                handler.refresh(state, is_state_change, scores, time_elapsed)
 
             time.sleep(_MAIN_LOOP_TICK_PERIOD_SECONDS)
 
@@ -173,11 +180,18 @@ def read_keys(stdscr):
     return keys, is_exit
 
 
-def tick(
+def tick(state, scores, keys, time_elapsed, shuffled_buttons_iter):
+    new_state = advance_state(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+    is_state_change = type(new_state) != type(state)  # pylint: disable=unidiomatic-typecheck
+    state = new_state
+    return is_state_change, state
+
+
+def advance_state(
     state, scores, keys, time_elapsed, shuffled_buttons_iter
 ):  # pylint: disable=too-many-return-statements
     match state:
-        case states.NOT_STARTED:
+        case states.NotStarted():
             # The game hasn't started yet.  When someone hits the new game key, start a new game.
             if _NEW_GAME_KEY in keys:
                 return states.GameAboutToStart(elapsed=datetime.timedelta())
@@ -245,10 +259,16 @@ def parse_args():
 
 
 def main():
-    logging.basicConfig(filename="reactions.log", level=logging.INFO)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(
+        logging.handlers.RotatingFileHandler("reactions.log", maxBytes=10_000, backupCount=20)
+    )
+    root_logger.setLevel(logging.INFO)
+
     is_rpi = parse_args()
 
     try:
+        # Ideally this would be part of the Screen class, but that seems to be a huge PITA.
         screen.wrapper(lambda stdscr: main_loop(stdscr, is_rpi))
     except KeyboardInterrupt:
         pass

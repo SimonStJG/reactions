@@ -3,7 +3,9 @@ import datetime
 import random
 
 
-NOT_STARTED = "NOT_STARTED"
+@dataclasses.dataclass
+class NotStarted:
+    pass
 
 
 @dataclasses.dataclass

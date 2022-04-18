@@ -2,19 +2,25 @@ import abc
 import datetime
 import random
 
-from reactions import states
+from reactions import states, handler
 
 ZERO_TIME_DELTA = datetime.timedelta()
 SLOW_FLICKER_PERIOD = datetime.timedelta(milliseconds=1000)
 
 
-class ButtonLights:  # pylint: disable=too-few-public-methods
+class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
     def __init__(self, buttons):
         self.buttons = buttons
         self.state = None
         self.strategy = None
 
-    def refresh(self, state, time_elapsed):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def refresh(self, state, is_state_change, scores, time_elapsed):
         if self.state != state:
             self.state = state
             match state:
@@ -24,7 +30,7 @@ class ButtonLights:  # pylint: disable=too-few-public-methods
                     self.strategy = LightsOffStrategy(self.buttons)
                 case states.CoolDown():
                     self.strategy = LightsOffStrategy(self.buttons)
-                case states.NOT_STARTED:
+                case states.NotStarted():
                     self.strategy = FlickerStrategy(self.buttons, SLOW_FLICKER_PERIOD)
                 case states.GameFinished():
                     self.strategy = FlickerStrategy(self.buttons, SLOW_FLICKER_PERIOD)
@@ -89,12 +95,7 @@ class LightsOffStrategy(Strategy):  # pylint: disable=too-few-public-methods
         self.finished = True
 
 
-class StubButtonLights:  # pylint: disable=too-few-public-methods
-    def refresh(self, *args, **kwargs):
-        pass
-
-
 def button_lights(buttons, is_rpi):
     if is_rpi:
         return ButtonLights(buttons)
-    return StubButtonLights()
+    return handler.StubHandler()

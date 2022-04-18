@@ -1,3 +1,3 @@
 .idea
 *.pyc
-reactions.log
+reactions.log*

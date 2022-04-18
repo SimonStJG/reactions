@@ -2,12 +2,12 @@ import logging
 
 import simpleaudio
 
-from reactions import sounds, states
+from reactions import sounds, states, handler
 
 logger = logging.getLogger(__name__)
 
 
-class BackgroundMusic:
+class BackgroundMusic(handler.Handler):
     def __init__(self):
         self.background_wave_object = simpleaudio.WaveObject.from_wave_file(
             str(sounds.SOUNDS_ROOT / "Farm-background-noise.wav")
@@ -16,10 +16,6 @@ class BackgroundMusic:
             str(sounds.SOUNDS_ROOT / "sadtrombone.swf.wav")
         )
         self.play_object = None
-        # TODO this is really silly, should have a proper event loop where my handlers register to
-        #  receive ticks, and the ticks have sensible information like what the last state change
-        #  was.
-        self.is_finished = None
 
     def __enter__(self):
         return self
@@ -27,28 +23,22 @@ class BackgroundMusic:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
-    def refresh(self, state):
+    def refresh(self, state, is_state_change, scores, time_elapsed):
         match state:
             case states.GameAboutToStart():
                 self.play()
-                self.is_finished = False
             case states.CoolDown():
                 self.play()
-                self.is_finished = False
             case states.WaitingOnButton():
                 self.play()
-                self.is_finished = False
             case states.GameFinished():
                 self.stop()
-                if not self.is_finished:
+                if is_state_change:
                     try_play_audio(self.game_finished_wave_object)
-                self.is_finished = True
             case _:
                 self.stop()
-                self.is_finished = False
 
     def play(self):
-        logger.info(self.play_object)
         if self.play_object:
             if not self.play_object.is_playing():
                 # Stopped for some reason, repeat

@@ -2,7 +2,7 @@ import logging
 
 import simpleaudio
 
-from reactions import sounds, states, handler
+from reactions import handler, sounds, states
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class BackgroundMusic(handler.Handler):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
-    def refresh(self, state, is_state_change, scores, time_elapsed):
+    def refresh(self, state, is_state_change, time_elapsed):
         match state:
             case states.GameAboutToStart():
                 self.play()

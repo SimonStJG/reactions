@@ -1,11 +1,18 @@
 import curses
 import curses.ascii
+import datetime
 import math
 
-from reactions import states, handler
+from reactions import handler, states
 
 WIN_COLS = 80
 WIN_LINES = 20
+
+
+def new_screen(stdscr, enable_screen):
+    if enable_screen:
+        return Screen(stdscr)
+    return handler.StubHandler()
 
 
 class Screen(handler.Handler):
@@ -38,8 +45,8 @@ class Screen(handler.Handler):
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def refresh(self, state, is_state_change, scores, time_elapsed):
-        self._refresh_win_scores(scores)
+    def refresh(self, state, is_state_change, time_elapsed):
+        self._refresh_win_scores(state)
         self._refresh_win_main(state)
         self._refresh_win_footer()
 
@@ -49,14 +56,30 @@ class Screen(handler.Handler):
         self.win_footer.addstr(0, 0, "Press Escape key to exit")
         self.win_footer.refresh()
 
-    def _refresh_win_scores(self, scores):
+    def _refresh_win_scores(self, state):
         self.win_scores.move(0, 0)
         self.win_scores.clrtoeol()
 
-        self.win_scores.addstr(0, 0, f"{format_score(scores.current)} <- Current score")
-        high_score_msg = f"High Score -> {format_score(scores.high)}"
-        self.win_scores.addstr(0, WIN_COLS - len(high_score_msg) - 1, high_score_msg)
+        match state:
+            case states.WaitingOnButton(high_score=high_score, current_score=current_score):
+                self._add_win_scores(current_score, high_score)
+            case states.GameAboutToStart(high_score=high_score):
+                self._add_win_scores(datetime.timedelta(), high_score)
+            case states.NotStarted(high_score=high_score):
+                self._add_win_scores(datetime.timedelta(), high_score)
+            case states.CoolDown(high_score=high_score, current_score=current_score):
+                self._add_win_scores(current_score, high_score)
+            case states.GameFinished(high_score=high_score, current_score=current_score):
+                self._add_win_scores(current_score, high_score)
+            case _:
+                raise NotImplementedError()
+
         self.win_scores.refresh()
+
+    def _add_win_scores(self, current_score, high_score):
+        self.win_scores.addstr(0, 0, f"{format_score(current_score)} <- Current score")
+        high_score_msg = f"High Score -> {format_score(high_score)}"
+        self.win_scores.addstr(0, WIN_COLS - len(high_score_msg) - 1, high_score_msg)
 
     def _refresh_win_main(self, state):
         y_position = math.ceil((WIN_LINES - 2) / 2)
@@ -76,8 +99,10 @@ class Screen(handler.Handler):
                 centre_message("Get Ready..")
             case states.WaitingOnButton(button=button):
                 centre_message(f"Press button: {button.key}")
-            case states.GameFinished(last_score=last_score):
-                centre_message(f"Your score: {format_score(last_score)}.  Press N to play again.")
+            case states.GameFinished(current_score=current_score):
+                centre_message(
+                    f"Your score: {format_score(current_score)}.  Press N to play again."
+                )
             case _:
                 raise NotImplementedError(state)
 

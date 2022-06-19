@@ -5,21 +5,22 @@ import datetime
 import logging
 import logging.handlers
 import random
+import sys
 import time
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 import gpiozero
 import simpleaudio
 
 from reactions import (
-    screen,
-    button_polling,
-    segment_display,
-    high_score,
-    states,
-    sounds,
     button_lights,
+    button_polling,
+    high_score,
+    screen,
+    segment_display,
     sound,
+    sounds,
+    states,
 )
 
 _ROUNDS = 5
@@ -112,13 +113,7 @@ def shuffled_buttons(buttons: Buttons):
         yield from pool
 
 
-@dataclasses.dataclass
-class Scores:
-    current: datetime.timedelta
-    high: datetime.timedelta
-
-
-def main_loop(stdscr, is_rpi):
+def main_loop(stdscr, is_rpi, enable_screen):
     handlers = []
 
     with contextlib.ExitStack() as exit_stack:
@@ -127,20 +122,17 @@ def main_loop(stdscr, is_rpi):
         def register(handler):
             handlers.append(exit_stack.enter_context(handler))
 
-        register(screen.Screen(stdscr))
+        register(screen.new_screen(stdscr, enable_screen))
         register(segment_display.displays(is_rpi))
         register(sound.BackgroundMusic())
         register(button_lights.button_lights(buttons, is_rpi))
 
         shuffled_buttons_iter = iter(shuffled_buttons(buttons))
 
-        scores = Scores(
-            current=datetime.timedelta(),
-            high=high_score.read_high_score(default_high_score=_DEFAULT_HIGH_SCORE),
-        )
-
         last_tick = time.time_ns()
-        state = states.NotStarted()
+        state = states.NotStarted(
+            high_score=high_score.read_high_score(default_high_score=_DEFAULT_HIGH_SCORE)
+        )
         while True:
             button_polling.check_polling_thread_alive()
 
@@ -151,10 +143,10 @@ def main_loop(stdscr, is_rpi):
                 break
 
             play_sounds(buttons, keys)
-            is_state_change, state = tick(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+            is_state_change, state = tick(state, keys, time_elapsed, shuffled_buttons_iter)
 
             for handler in handlers:
-                handler.refresh(state, is_state_change, scores, time_elapsed)
+                handler.refresh(state, is_state_change, time_elapsed)
 
             time.sleep(_MAIN_LOOP_TICK_PERIOD_SECONDS)
 
@@ -175,75 +167,109 @@ def calculate_time_elapsed(last_tick):
 
 def read_keys(stdscr):
     keys = []
-    is_exit = screen.read_keys(stdscr, keys)
+    if stdscr:
+        is_exit = screen.read_keys(stdscr, keys)
+    else:
+        is_exit = False
     button_polling.read_keys(keys)
     return keys, is_exit
 
 
-def tick(state, scores, keys, time_elapsed, shuffled_buttons_iter):
-    new_state = advance_state(state, scores, keys, time_elapsed, shuffled_buttons_iter)
+def tick(state, keys, time_elapsed, shuffled_buttons_iter):
+    new_state = advance_state(state, keys, time_elapsed, shuffled_buttons_iter)
     is_state_change = type(new_state) != type(state)  # pylint: disable=unidiomatic-typecheck
+
+    if is_state_change:
+        logger.info("State Change: %s -> %s", state, new_state)
     state = new_state
     return is_state_change, state
 
 
 def advance_state(
-    state, scores, keys, time_elapsed, shuffled_buttons_iter
+    state, keys, time_elapsed, shuffled_buttons_iter
 ):  # pylint: disable=too-many-return-statements
     match state:
-        case states.NotStarted():
+        case states.NotStarted(high_score=high_score_):
             # The game hasn't started yet.  When someone hits the new game key, start a new game.
             if _NEW_GAME_KEY in keys:
-                return states.GameAboutToStart(elapsed=datetime.timedelta())
+                return states.GameAboutToStart(high_score=high_score_, elapsed=datetime.timedelta())
 
-        case states.GameAboutToStart(elapsed=elapsed):
+        case states.GameFinished(high_score=high_score_):
+            # The game has finished.    When someone hits the new game key, start a new game.
+            if _NEW_GAME_KEY in keys:
+                return states.GameAboutToStart(high_score=high_score_, elapsed=datetime.timedelta())
+
+        case states.GameAboutToStart(high_score=high_score_, elapsed=elapsed):
             # The game is about to start.  Time elapsed ticks up until it's greater than
             # _GAME_ABOUT_TO_START_DURATION, then the game starts by choosing the first button.
             new_elapsed = elapsed + time_elapsed
             if new_elapsed >= _GAME_ABOUT_TO_START_DURATION:
-                return states.WaitingOnButton(0, button=next(shuffled_buttons_iter))
+                return states.WaitingOnButton(
+                    high_score=high_score_,
+                    round_=0,
+                    button=next(shuffled_buttons_iter),
+                    current_score=datetime.timedelta(),
+                )
             state.elapsed = new_elapsed
             return state
 
-        case states.CoolDown(round_=round_, delay=delay, elapsed=elapsed):
+        case states.CoolDown(
+            high_score=high_score_,
+            current_score=current_score,
+            round_=round_,
+            delay=delay,
+            elapsed=elapsed,
+        ):
             # A button has just been pressed, wait for cool down delay to end before choosing a new
             # target button.  elapsed ticks up until it's greater than delay, then a new button is
             # chosen.
             new_elapsed = elapsed + time_elapsed
             if new_elapsed >= delay:
-                return states.WaitingOnButton(round_, button=next(shuffled_buttons_iter))
+                return states.WaitingOnButton(
+                    high_score=high_score_,
+                    round_=round_,
+                    button=next(shuffled_buttons_iter),
+                    current_score=current_score,
+                )
 
             state.elapsed = new_elapsed
             return state
 
-        case states.WaitingOnButton(round_=round_, button=button):
+        case states.WaitingOnButton(
+            high_score=high_score_, current_score=current_score, round_=round_, button=button
+        ):
             # Waiting for someone to hit the right button.
-            # * If the game has taken longer than _TIMEOUT_SECS then go to GameFinished.
+            # * If the game has taken longer than _TIMEOUT_SECS then go to NotStarted (GameFinished
+            #   makes less sense as there is no sensible last score).
             # * If someone managed to hit two keys at once then they are a superhuman, so don't
             #   worry about this and just look at the first key.
-            # * If the key is wrong then add a penalty to the clock.
+            # * If the key is wrong then add a penalty to the current score.
             # * If we've had enough rounds then save the high score and finish the game, otherwise
             #   enter CoolDown.
-            scores.current += time_elapsed
+            current_score = current_score + time_elapsed
 
-            if scores.current >= _TIMEOUT_SECS:
-                return states.GameFinished(last_score=scores.current)
+            if current_score >= _TIMEOUT_SECS:
+                return states.NotStarted(high_score=high_score_)
 
             if keys:
                 first_key = keys[0]
                 if first_key != button.key:
-                    scores.current += datetime.timedelta(seconds=5)
-                if round_ == _ROUNDS - 1:
-                    if scores.current < scores.high:
-                        scores.high = scores.current
-                        high_score.save_high_score(scores.high)
-                    return states.GameFinished(last_score=scores.current)
-                return states.cool_down(round_=round_ + 1)
+                    current_score += datetime.timedelta(seconds=5)
 
-        case states.GameFinished():
-            # The game has finished,
-            if _NEW_GAME_KEY in keys:
-                return states.GameAboutToStart(elapsed=datetime.timedelta())
+                if round_ == _ROUNDS - 1:
+                    if current_score < high_score_:
+                        high_score_ = current_score
+                        high_score.save_high_score(high_score_)
+                    else:
+                        high_score_ = state.high_score
+
+                    return states.GameFinished(high_score=high_score_, current_score=current_score)
+
+                return states.cool_down(
+                    high_score=high_score_, current_score=current_score, round_=round_ + 1
+                )
+
+            state.current_score = current_score
 
         case _:
             raise NotImplementedError(state)
@@ -254,21 +280,34 @@ def advance_state(
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rpi", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--screen", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
-    return args.rpi
+    return args.rpi, args.screen
 
 
 def main():
-    root_logger = logging.getLogger()
-    root_logger.addHandler(
-        logging.handlers.RotatingFileHandler("reactions.log", maxBytes=10_000, backupCount=20)
-    )
-    root_logger.setLevel(logging.INFO)
+    is_rpi, enable_screen = parse_args()
 
-    is_rpi = parse_args()
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    if enable_screen:
+        # Can't use the stdout handler if we're running using screen
+        root_logger.addHandler(
+            logging.handlers.RotatingFileHandler("reactions.log", maxBytes=10_000, backupCount=20)
+        )
+    else:
+        root_logger.addHandler(logging.StreamHandler(stream=sys.stdout))
 
     try:
-        # Ideally this would be part of the Screen class, but that seems to be a huge PITA.
-        screen.wrapper(lambda stdscr: main_loop(stdscr, is_rpi))
+        logger.info("Starting up!")
+        if enable_screen:
+            # Ideally this wrapper would be part of the Screen class, but that seems to be a huge
+            # pain to do in practise so ¯\_(ツ)_/¯
+            screen.wrapper(lambda stdscr: main_loop(stdscr, is_rpi, enable_screen))
+        else:
+            main_loop(None, is_rpi, enable_screen)
     except KeyboardInterrupt:
-        pass
+        logger.info("KeyboardInterrupt", exc_info=True)
+    except:
+        logger.critical("Fatal error", exc_info=True)
+        raise

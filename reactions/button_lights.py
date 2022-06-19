@@ -2,16 +2,15 @@ import abc
 import datetime
 import random
 
-from reactions import states, handler
+from reactions import handler, states
 
 ZERO_TIME_DELTA = datetime.timedelta()
-SLOW_FLICKER_PERIOD = datetime.timedelta(milliseconds=1000)
+FLICKER_PERIOD = datetime.timedelta(milliseconds=500)
 
 
 class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
     def __init__(self, buttons):
         self.buttons = buttons
-        self.state = None
         self.strategy = None
 
     def __enter__(self):
@@ -20,9 +19,8 @@ class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
     def __exit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def refresh(self, state, is_state_change, scores, time_elapsed):
-        if self.state != state:
-            self.state = state
+    def refresh(self, state, is_state_change, time_elapsed):
+        if is_state_change or self.strategy is None:
             match state:
                 case states.WaitingOnButton(button=waited_on_button):
                     self.strategy = SingleLightStrategy(self.buttons, waited_on_button)
@@ -31,9 +29,11 @@ class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
                 case states.CoolDown():
                     self.strategy = LightsOffStrategy(self.buttons)
                 case states.NotStarted():
-                    self.strategy = FlickerStrategy(self.buttons, SLOW_FLICKER_PERIOD)
+                    self.strategy = FlickerStrategy(self.buttons, FLICKER_PERIOD)
                 case states.GameFinished():
-                    self.strategy = FlickerStrategy(self.buttons, SLOW_FLICKER_PERIOD)
+                    self.strategy = FlickerStrategy(self.buttons, FLICKER_PERIOD)
+                case _:
+                    raise NotImplementedError()
 
         self.strategy.refresh(time_elapsed)
 

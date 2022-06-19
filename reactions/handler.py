@@ -8,7 +8,7 @@ class Handler(Protocol):
     def __exit__(self, exc_type, exc_val, exc_tb):
         ...
 
-    def refresh(self, state, is_state_change, scores, time_elapsed):
+    def refresh(self, state, is_state_change, time_elapsed):
         ...
 
 

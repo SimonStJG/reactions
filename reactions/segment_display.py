@@ -2,7 +2,7 @@ import math
 
 import tm1637
 
-from reactions import states, handler
+from reactions import handler, states
 
 
 class Displays(handler.Handler):
@@ -17,20 +17,24 @@ class Displays(handler.Handler):
         self.current.clear()
         self.high_score.clear()
 
-    def refresh(self, state, is_state_change, scores, time_elapsed):
+    def refresh(self, state, is_state_change, time_elapsed):
         match state:
-            case states.NotStarted():
+            case states.NotStarted(high_score=high_score):
                 self.current.clear()
-                self.high_score.write_score(scores.high)
+                self.high_score.write_score(high_score)
             case states.GameAboutToStart():
                 self.current.text("GOOD")
                 self.high_score.text("LUCK")
-            case states.GameFinished():
-                self.current.write_score(scores.current)
-                self.high_score.write_score(scores.high)
-            case _:
-                self.current.write_score(scores.current)
-                self.high_score.write_score(scores.high)
+            case states.GameFinished(high_score=high_score, current_score=current_score):
+                self._write_both_scores(current_score, high_score)
+            case states.CoolDown(high_score=high_score, current_score=current_score):
+                self._write_both_scores(current_score, high_score)
+            case states.WaitingOnButton(high_score=high_score, current_score=current_score):
+                self._write_both_scores(current_score, high_score)
+
+    def _write_both_scores(self, current_score, high_score):
+        self.current.write_score(current_score)
+        self.high_score.write_score(high_score)
 
     def clear(self):
         self.current.clear()

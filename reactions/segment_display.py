@@ -65,6 +65,6 @@ class Display:
 
 def displays(is_rpi):
     if is_rpi:
-        return Displays(Display(tm1637.TM1637(21, 20)), Display(tm1637.TM1637(19, 26)))
+        return Displays(Display(tm1637.TM1637(18, 15)), Display(tm1637.TM1637(24, 23)))
 
     return handler.StubHandler()

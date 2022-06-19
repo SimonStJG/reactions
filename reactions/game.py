@@ -77,17 +77,17 @@ class Buttons:
 @contextlib.contextmanager
 def create_buttons(is_rpi):
     in_game_buttons = [
-        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 17, 5),
-        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 27, 4),
-        # new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 7, 13),
-        # new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 8, 14),
-        # new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 9, 15),
-        # new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 10, 16),
-        # new_button(is_rpi, "X", "mixkit-stallion-horse-neigh-1762.wav", 11, 17),
+        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 13, 10),
+        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 19, 22),
+        new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 26, 9),
+        new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 6, 17),
+        new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 5, 27),
+        new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 11, 4),
     ]
     new_game_button = new_button(
-        is_rpi, _NEW_GAME_KEY, "mixkit-stallion-horse-neigh-1762.wav", None, 16
+        is_rpi, _NEW_GAME_KEY, "mixkit-stallion-horse-neigh-1762.wav", None, 14
     )
+
     try:
         buttons_by_key = {button.key: button for button in in_game_buttons + [new_game_button]}
         if is_rpi:

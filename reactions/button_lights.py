@@ -8,7 +8,7 @@ ZERO_TIME_DELTA = datetime.timedelta()
 FLICKER_PERIOD = datetime.timedelta(milliseconds=500)
 
 
-class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
+class ButtonLights(handler.Handler):
     def __init__(self, buttons):
         self.buttons = buttons
         self.strategy = None
@@ -30,6 +30,8 @@ class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
                     self.strategy = LightsOffStrategy(self.buttons)
                 case states.NotStarted():
                     self.strategy = FlickerStrategy(self.buttons, FLICKER_PERIOD)
+                case states.GameFinishedCoolDown():
+                    self.strategy = LightsOnStrategy(self.buttons)
                 case states.GameFinished():
                     self.strategy = FlickerStrategy(self.buttons, FLICKER_PERIOD)
                 case _:
@@ -38,13 +40,13 @@ class ButtonLights(handler.Handler):  # pylint: disable=too-few-public-methods
         self.strategy.refresh(time_elapsed)
 
 
-class Strategy(abc.ABC):  # pylint: disable=too-few-public-methods
+class Strategy(abc.ABC):
     @abc.abstractmethod
     def refresh(self, time_elapsed):
         raise NotImplementedError()
 
 
-class FlickerStrategy(Strategy):  # pylint: disable=too-few-public-methods
+class FlickerStrategy(Strategy):
     def __init__(self, buttons, period):
         self.buttons = buttons
         self.period = period
@@ -61,7 +63,7 @@ class FlickerStrategy(Strategy):  # pylint: disable=too-few-public-methods
                     button.led.off()
 
 
-class SingleLightStrategy(Strategy):  # pylint: disable=too-few-public-methods
+class SingleLightStrategy(Strategy):
     def __init__(self, buttons, led_on_button):
         self.buttons = buttons
         self.led_on_button = led_on_button
@@ -80,7 +82,7 @@ class SingleLightStrategy(Strategy):  # pylint: disable=too-few-public-methods
         self.finished = True
 
 
-class LightsOffStrategy(Strategy):  # pylint: disable=too-few-public-methods
+class LightsOffStrategy(Strategy):
     def __init__(self, buttons):
         self.buttons = buttons
         self.finished = False
@@ -91,6 +93,21 @@ class LightsOffStrategy(Strategy):  # pylint: disable=too-few-public-methods
 
         for button in self.buttons.in_game_buttons:
             button.led.off()
+
+        self.finished = True
+
+
+class LightsOnStrategy(Strategy):
+    def __init__(self, buttons):
+        self.buttons = buttons
+        self.finished = False
+
+    def refresh(self, time_elapsed):
+        if self.finished:
+            return
+
+        for button in self.buttons.in_game_buttons:
+            button.led.on()
 
         self.finished = True
 

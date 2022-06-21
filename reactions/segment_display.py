@@ -25,6 +25,8 @@ class Displays(handler.Handler):
             case states.GameAboutToStart():
                 self.current.text("GOOD")
                 self.high_score.text("LUCK")
+            case states.GameFinishedCoolDown(high_score=high_score, current_score=current_score):
+                self._write_both_scores(current_score, high_score)
             case states.GameFinished(high_score=high_score, current_score=current_score):
                 self._write_both_scores(current_score, high_score)
             case states.CoolDown(high_score=high_score, current_score=current_score):

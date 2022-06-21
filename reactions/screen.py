@@ -69,6 +69,8 @@ class Screen(handler.Handler):
                 self._add_win_scores(datetime.timedelta(), high_score)
             case states.CoolDown(high_score=high_score, current_score=current_score):
                 self._add_win_scores(current_score, high_score)
+            case states.GameFinishedCoolDown(high_score=high_score, current_score=current_score):
+                self._add_win_scores(current_score, high_score)
             case states.GameFinished(high_score=high_score, current_score=current_score):
                 self._add_win_scores(current_score, high_score)
             case _:
@@ -100,6 +102,10 @@ class Screen(handler.Handler):
             case states.WaitingOnButton(button=button):
                 centre_message(f"Press button: {button.key}")
             case states.GameFinished(current_score=current_score):
+                centre_message(
+                    f"Your score: {format_score(current_score)}.  Press N to play again."
+                )
+            case states.GameFinishedCoolDown(current_score=current_score):
                 centre_message(
                     f"Your score: {format_score(current_score)}.  Press N to play again."
                 )

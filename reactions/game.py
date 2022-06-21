@@ -4,6 +4,7 @@ import dataclasses
 import datetime
 import logging
 import logging.handlers
+import math
 import random
 import sys
 import time
@@ -23,7 +24,7 @@ from reactions import (
     states,
 )
 
-_ROUNDS = 5
+_ROUNDS = 15
 _DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=99)
 _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 _BUTTON_DEBOUNCE_PERIOD_SECONDS = 0.050  # 50 ms
@@ -31,6 +32,8 @@ _BUTTON_POLL_TICK_PERIOD_SECONDS = 0.01
 _MAIN_LOOP_TICK_PERIOD_SECONDS = 0.01
 _NEW_GAME_KEY = "N"
 _GAME_ABOUT_TO_START_DURATION = datetime.timedelta(seconds=3)
+_GAME_FINISHED_COOLDOWN_DURATION = datetime.timedelta(seconds=3)
+_INCORRECT_BUTTON_PRESS_PENALTY = datetime.timedelta(seconds=2)
 
 logger = logging.getLogger(__name__)
 
@@ -113,18 +116,18 @@ def shuffled_buttons(buttons: Buttons):
         yield from pool
 
 
-def main_loop(stdscr, is_rpi, enable_screen):
+def main_loop(stdscr, is_rpi, enable_screen):  # pylint: disable=too-many-locals
     handlers = []
 
     with contextlib.ExitStack() as exit_stack:
         buttons = exit_stack.enter_context(create_buttons(is_rpi))
+        wave_objects = sound.WaveObjects()
 
         def register(handler):
             handlers.append(exit_stack.enter_context(handler))
 
         register(screen.new_screen(stdscr, enable_screen))
         register(segment_display.displays(is_rpi))
-        register(sound.BackgroundMusic())
         register(button_lights.button_lights(buttons, is_rpi))
 
         shuffled_buttons_iter = iter(shuffled_buttons(buttons))
@@ -143,7 +146,9 @@ def main_loop(stdscr, is_rpi, enable_screen):
                 break
 
             play_sounds(buttons, keys)
-            is_state_change, state = tick(state, keys, time_elapsed, shuffled_buttons_iter)
+            is_state_change, state = advance_state(
+                state, keys, time_elapsed, shuffled_buttons_iter, wave_objects
+            )
 
             for handler in handlers:
                 handler.refresh(state, is_state_change, time_elapsed)
@@ -175,8 +180,8 @@ def read_keys(stdscr):
     return keys, is_exit
 
 
-def tick(state, keys, time_elapsed, shuffled_buttons_iter):
-    new_state = advance_state(state, keys, time_elapsed, shuffled_buttons_iter)
+def advance_state(state, keys, time_elapsed, shuffled_buttons_iter, wave_objects):
+    new_state = calculate_next_state(state, keys, time_elapsed, shuffled_buttons_iter, wave_objects)
     is_state_change = type(new_state) != type(state)  # pylint: disable=unidiomatic-typecheck
 
     if is_state_change:
@@ -185,14 +190,25 @@ def tick(state, keys, time_elapsed, shuffled_buttons_iter):
     return is_state_change, state
 
 
-def advance_state(
-    state, keys, time_elapsed, shuffled_buttons_iter
+def calculate_next_state(
+    state, keys, time_elapsed, shuffled_buttons_iter, wave_objects
 ):  # pylint: disable=too-many-return-statements
     match state:
         case states.NotStarted(high_score=high_score_):
             # The game hasn't started yet.  When someone hits the new game key, start a new game.
             if _NEW_GAME_KEY in keys:
                 return states.GameAboutToStart(high_score=high_score_, elapsed=datetime.timedelta())
+
+        case states.GameFinishedCoolDown(
+            current_score=current_score, high_score=high_score_, elapsed=elapsed
+        ):
+            # The game has just finished.  Wait for enough time to elapse before entering
+            # GameFinished.
+            new_elapsed = elapsed + time_elapsed
+            if new_elapsed >= _GAME_FINISHED_COOLDOWN_DURATION:
+                return states.GameFinished(high_score=high_score_, current_score=current_score)
+            state.elapsed = new_elapsed
+            return state
 
         case states.GameFinished(high_score=high_score_):
             # The game has finished.    When someone hits the new game key, start a new game.
@@ -240,12 +256,12 @@ def advance_state(
         ):
             # Waiting for someone to hit the right button.
             # * If the game has taken longer than _TIMEOUT_SECS then go to NotStarted (GameFinished
-            #   makes less sense as there is no sensible last score).
+            #   of GameFinishedCoolDown make less sense as there is no sensible last score).
             # * If someone managed to hit two keys at once then they are a superhuman, so don't
             #   worry about this and just look at the first key.
             # * If the key is wrong then add a penalty to the current score.
-            # * If we've had enough rounds then save the high score and finish the game, otherwise
-            #   enter CoolDown.
+            # * If we've had enough rounds then save the high score and finish the game with
+            #   GameFinishedCoolDown, otherwise enter CoolDown.
             current_score = current_score + time_elapsed
 
             if current_score >= _TIMEOUT_SECS:
@@ -254,7 +270,11 @@ def advance_state(
             if keys:
                 first_key = keys[0]
                 if first_key != button.key:
-                    current_score += datetime.timedelta(seconds=5)
+                    sound.try_play_audio(wave_objects.incorrect_button_press)
+                    current_score += _INCORRECT_BUTTON_PRESS_PENALTY
+
+                    if current_score >= _TIMEOUT_SECS:
+                        return states.NotStarted(high_score=high_score_)
 
                 if round_ == _ROUNDS - 1:
                     if current_score < high_score_:
@@ -263,10 +283,14 @@ def advance_state(
                     else:
                         high_score_ = state.high_score
 
-                    return states.GameFinished(high_score=high_score_, current_score=current_score)
+                    return states.GameFinishedCoolDown(
+                        high_score=high_score_,
+                        current_score=current_score,
+                        elapsed=datetime.timedelta(),
+                    )
 
-                return states.cool_down(
-                    high_score=high_score_, current_score=current_score, round_=round_ + 1
+                return cool_down(
+                    high_score_=high_score_, current_score=current_score, round_=round_ + 1
                 )
 
             state.current_score = current_score
@@ -275,6 +299,24 @@ def advance_state(
             raise NotImplementedError(state)
 
     return state
+
+
+def cool_down(round_: int, high_score_: datetime.timedelta, current_score: datetime.timedelta):
+    # On round 1, wait between 1.5-3 seconds and on the last round, don't wait any time at all.
+    # Linearly interpolate between these.  round_ runs from 0 to max_rounds-1.
+    game_progress_as_fraction = round_ / (_ROUNDS - 1)
+    delay_lower_bound_ms = math.floor(1_500 * (1 - game_progress_as_fraction))
+    delay_upper_bound_ms = math.floor(3_000 * (1 - game_progress_as_fraction))
+    delay = datetime.timedelta(
+        seconds=random.randint(delay_lower_bound_ms, delay_upper_bound_ms) / 1_000
+    )
+    return states.CoolDown(
+        round_=round_,
+        delay=delay,
+        elapsed=datetime.timedelta(),
+        high_score=high_score_,
+        current_score=current_score,
+    )
 
 
 def parse_args():

@@ -23,7 +23,9 @@ from reactions import (
     states,
 )
 
-_ROUNDS = 15
+_ROUNDS = 25
+_ROUNDS_AT_TOP_SPEED = 8
+_MIN_COOLDOWN_DELAY = datetime.timedelta(milliseconds=200)
 _DEFAULT_HIGH_SCORE = datetime.timedelta(seconds=99)
 _TIMEOUT_SECS = datetime.timedelta(seconds=60)
 _BUTTON_DEBOUNCE_PERIOD_SECONDS = 0.050  # 50 ms
@@ -300,14 +302,22 @@ def calculate_next_state(
 
 
 def cool_down(round_: int, high_score_: datetime.timedelta, current_score: datetime.timedelta):
-    # On round 1, wait between 1.5-3 seconds and on the last round, don't wait any time at all.
-    # Linearly interpolate between these.  round_ runs from 0 to max_rounds-1.
-    game_progress_as_fraction = round_ / (_ROUNDS - 1)
-    delay_lower_bound_ms = math.floor(1_500 * (1 - game_progress_as_fraction))
-    delay_upper_bound_ms = math.floor(3_000 * (1 - game_progress_as_fraction))
-    delay = datetime.timedelta(
-        seconds=random.randint(delay_lower_bound_ms, delay_upper_bound_ms) / 1_000
+    # On round 1, wait between 1.5-3 seconds.  For the last _ROUNDS_AT_TOP_SPEED rounds, don't wait
+    # any time at all.  Linearly interpolate between these.  round_ runs from 0 to max_rounds-1.
+    game_progress_as_fraction = min(round_, _ROUNDS - _ROUNDS_AT_TOP_SPEED) / (
+        _ROUNDS - _ROUNDS_AT_TOP_SPEED
     )
+    if game_progress_as_fraction < 1:
+        delay_lower_bound_ms = math.floor(1_500 * (1 - game_progress_as_fraction))
+        delay_upper_bound_ms = math.floor(3_000 * (1 - game_progress_as_fraction))
+        delay = max(
+            datetime.timedelta(
+                seconds=random.randint(delay_lower_bound_ms, delay_upper_bound_ms) / 1_000
+            ),
+            _MIN_COOLDOWN_DELAY,
+        )
+    else:
+        delay = _MIN_COOLDOWN_DELAY
     return states.CoolDown(
         round_=round_,
         delay=delay,

@@ -11,7 +11,7 @@ import time
 from typing import Dict, List, Optional
 
 import gpiozero
-import simpleaudio
+import pydub
 
 from reactions import (
     button_lights,
@@ -20,7 +20,6 @@ from reactions import (
     screen,
     segment_display,
     sound,
-    sounds,
     states,
 )
 
@@ -41,18 +40,18 @@ logger = logging.getLogger(__name__)
 @dataclasses.dataclass(unsafe_hash=True)
 class _Button:
     key: str
-    audio_segment: simpleaudio.WaveObject
+    audio_segment: pydub.AudioSegment
     led: Optional[gpiozero.LED]
     rpi_button: Optional[gpiozero.Button]
 
 
-def new_button(is_rpi, key, sound_, pin_led, pin_button):
+def new_button(is_rpi, key, sound_filename, pin_led, pin_button):
     # I was getting "wave.Error: unknown format: 65534" on some of my wav files.  Some
     # mysterious comments on the internet told me to do this, which did fix it:
     # for file in $(ls -1 originals | grep wav); do
     #   sox originals/$file -b 16 -e signed-integer $file
     # done
-    wave_object = simpleaudio.WaveObject.from_wave_file(str(sounds.SOUNDS_ROOT / sound_))
+    audio_segment = sound.load_audio_segment(sound_filename)
 
     if is_rpi and pin_led is not None:
         led = gpiozero.LED(pin_led)
@@ -66,7 +65,7 @@ def new_button(is_rpi, key, sound_, pin_led, pin_button):
 
     return _Button(
         key=key,
-        audio_segment=wave_object,
+        audio_segment=audio_segment,
         led=led,
         rpi_button=rpi_button,
     )
@@ -81,16 +80,14 @@ class Buttons:
 @contextlib.contextmanager
 def create_buttons(is_rpi):
     in_game_buttons = [
-        new_button(is_rpi, "Q", "mixkit-boy-says-cow-1742.wav", 13, 10),
-        new_button(is_rpi, "W", "mixkit-cartoon-wolf-howling-1774.wav", 19, 22),
-        new_button(is_rpi, "E", "mixkit-cowbell-sharp-hit-1743.wav", 26, 9),
-        new_button(is_rpi, "A", "mixkit-cow-moo-indoors-1749.wav", 6, 17),
-        new_button(is_rpi, "S", "mixkit-goat-baa-stutter-1771.wav", 5, 27),
-        new_button(is_rpi, "D", "mixkit-goat-single-baa-1760.wav", 11, 4),
+        new_button(is_rpi, "Q", "c.wav", 13, 10),
+        new_button(is_rpi, "W", "d.wav", 19, 22),
+        new_button(is_rpi, "E", "e.wav", 26, 9),
+        new_button(is_rpi, "A", "g.wav", 6, 17),
+        new_button(is_rpi, "S", "a.wav", 5, 27),
+        new_button(is_rpi, "D", "b.wav", 11, 4),
     ]
-    new_game_button = new_button(
-        is_rpi, _NEW_GAME_KEY, "mixkit-stallion-horse-neigh-1762.wav", None, 14
-    )
+    new_game_button = new_button(is_rpi, _NEW_GAME_KEY, "c-high.wav", None, 14)
 
     try:
         buttons_by_key = {button.key: button for button in in_game_buttons + [new_game_button]}
@@ -283,6 +280,7 @@ def calculate_next_state(
                     else:
                         high_score_ = state.high_score
 
+                    sound.try_play_audio(wave_objects.game_over)
                     return states.GameFinishedCoolDown(
                         high_score=high_score_,
                         current_score=current_score,

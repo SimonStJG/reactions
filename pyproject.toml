@@ -9,9 +9,10 @@ reactions = "reactions.game:main"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-simpleaudio = "^1.0.4"
 gpiozero = "^1.6.2"
 raspberrypi-tm1637 = {git = "https://github.com/SimonStJG/raspberrypi-tm1637.git"}
+pydub = "^0.25.1"
+simpleaudio = "^1.0.4"
 
 [tool.poetry.dev-dependencies]
 black = "^22.1.0"

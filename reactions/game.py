@@ -302,8 +302,9 @@ def calculate_next_state(
 
 
 def cool_down(round_: int, high_score_: datetime.timedelta, current_score: datetime.timedelta):
-    # On round 1, wait between 1.5-3 seconds.  For the last _ROUNDS_AT_TOP_SPEED rounds, don't wait
-    # any time at all.  Linearly interpolate between these.  round_ runs from 0 to max_rounds-1.
+    # On round 1, wait between 1.5-3 seconds.  For the last _ROUNDS_AT_TOP_SPEED rounds, only wait
+    # _MIN_COOLDOWN_DELAY.  Linearly interpolate between these.  round_ runs from 0 to
+    # max_rounds-1.
     game_progress_as_fraction = min(round_, _ROUNDS - _ROUNDS_AT_TOP_SPEED) / (
         _ROUNDS - _ROUNDS_AT_TOP_SPEED
     )
